@@ -5,7 +5,66 @@ import math
 
 
 # =========================================================
-# EXTRACT VARIABLES FROM FORMULA
+# VARIABLE ALIASES
+# =========================================================
+VARIABLE_ALIASES = {
+
+    # HEIGHT / LENGTH
+    "opening_length": "opening_height",
+    "height_opening": "opening_height",
+
+    # WIDTH
+    "opening_w": "opening_width",
+
+    # CLEARANCE
+    "clr": "clearance",
+
+    # ALLOWANCE
+    "extra_width": "allowance",
+    "extra_length": "allowance",
+
+    # FRAME
+    "vertical_length": "frame_vertical_length",
+    "horizontal_length": "frame_horizontal_length"
+}
+
+
+# =========================================================
+# NORMALIZE VARIABLE
+# =========================================================
+def normalize_variable(var_name):
+
+    var_name = str(var_name).strip()
+
+    return VARIABLE_ALIASES.get(
+        var_name,
+        var_name
+    )
+
+
+# =========================================================
+# NORMALIZE FORMULA
+# =========================================================
+def normalize_formula(formula):
+
+    if not formula:
+        return formula
+
+    formula = str(formula)
+
+    for old, new in VARIABLE_ALIASES.items():
+
+        formula = re.sub(
+            rf"\b{old}\b",
+            new,
+            formula
+        )
+
+    return formula
+
+
+# =========================================================
+# EXTRACT VARIABLES
 # =========================================================
 def extract_formula_variables(formula):
 
@@ -14,8 +73,8 @@ def extract_formula_variables(formula):
 
     ignore_words = {
         "abs",
-        "max",
         "min",
+        "max",
         "round",
         "math"
     }
@@ -25,20 +84,28 @@ def extract_formula_variables(formula):
         str(formula)
     )
 
-    return sorted(
-        list(
-            set(
-                v for v in variables
-                if v not in ignore_words
+    cleaned = []
+
+    for v in variables:
+
+        if v not in ignore_words:
+
+            cleaned.append(
+                normalize_variable(v)
             )
-        )
-    )
+
+    return sorted(list(set(cleaned)))
 
 
 # =========================================================
 # SAFE FORMULA EVALUATOR
 # =========================================================
-def evaluate_formula(formula, variables):
+def evaluate_formula(
+    formula,
+    variables
+):
+
+    formula = normalize_formula(formula)
 
     allowed_names = {
         "abs": abs,
@@ -58,30 +125,32 @@ def evaluate_formula(formula, variables):
 
 
 # =========================================================
-# GET REQUIRED USER INPUTS
+# GET REQUIRED INPUTS
 # =========================================================
 def get_required_inputs(rules_df):
 
-    all_formula_variables = set()
+    all_variables = set()
 
     for formula in rules_df["formula_used"].dropna():
 
-        vars_found = extract_formula_variables(formula)
+        vars_found = extract_formula_variables(
+            formula
+        )
 
         for var in vars_found:
-            all_formula_variables.add(var)
+            all_variables.add(var)
 
-    calculated_attributes = set(
-        rules_df["attribute"]
-        .dropna()
-        .astype(str)
-        .tolist()
-    )
+    calculated_attributes = set()
+
+    for attr in rules_df["attribute"].dropna():
+
+        calculated_attributes.add(
+            normalize_variable(attr)
+        )
 
     required_inputs = sorted(
         list(
-            all_formula_variables
-            - calculated_attributes
+            all_variables - calculated_attributes
         )
     )
 
@@ -91,77 +160,96 @@ def get_required_inputs(rules_df):
 # =========================================================
 # RESOLVE FORMULAS RECURSIVELY
 # =========================================================
-def resolve_component_formulas(
+def resolve_formulas(
     rules_df,
     user_inputs
 ):
 
-    calculated = dict(user_inputs)
+    calculated = {}
+
+    # =========================================
+    # SAVE USER INPUTS
+    # =========================================
+    for k, v in user_inputs.items():
+
+        calculated[
+            normalize_variable(k)
+        ] = v
 
     results = []
 
-    pending_rules = rules_df.to_dict("records")
-
-    max_iterations = 100
+    pending = rules_df.to_dict("records")
 
     iteration = 0
 
-    while pending_rules and iteration < max_iterations:
+    max_iterations = 100
+
+    while pending and iteration < max_iterations:
 
         iteration += 1
 
         unresolved = []
 
-        progress_made = False
+        progress = False
 
-        for rule in pending_rules:
-
-            component = str(rule["component"]).strip()
-
-            attribute = str(rule["attribute"]).strip()
-
-            rule_type = str(rule["type"]).lower().strip()
-
-            formula = rule.get("formula_used")
-
-            quantity = rule.get("quantity")
+        for rule in pending:
 
             try:
 
+                component = str(
+                    rule["component"]
+                ).strip()
+
+                attribute = normalize_variable(
+                    rule["attribute"]
+                )
+
+                rule_type = str(
+                    rule["type"]
+                ).lower().strip()
+
+                formula = normalize_formula(
+                    rule.get("formula_used")
+                )
+
+                quantity = rule.get("quantity")
+
                 # =====================================
-                # FIXED
+                # FIXED RULE
                 # =====================================
                 if rule_type == "fixed":
 
                     value = float(quantity)
 
                 # =====================================
-                # MANUAL
+                # MANUAL RULE
                 # =====================================
                 elif rule_type == "manual":
 
                     if attribute not in calculated:
+
                         unresolved.append(rule)
                         continue
 
                     value = calculated[attribute]
 
                 # =====================================
-                # FORMULA
+                # FORMULA RULE
                 # =====================================
                 elif rule_type == "formula":
 
-                    required_vars = extract_formula_variables(
+                    required = extract_formula_variables(
                         formula
                     )
 
-                    missing_vars = [
+                    missing = [
                         var
-                        for var in required_vars
+                        for var in required
                         if var not in calculated
                     ]
 
-                    if missing_vars:
+                    if missing:
+
                         unresolved.append(rule)
                         continue
 
@@ -171,39 +259,42 @@ def resolve_component_formulas(
                     )
 
                 else:
+
                     unresolved.append(rule)
                     continue
 
                 # =====================================
-                # SAVE RESULT
+                # SAVE RESULTS
                 # =====================================
-                result_key = f"{component}_{attribute}"
+                result_key = (
+                    f"{component}_{attribute}"
+                )
 
                 calculated[result_key] = value
 
-                # VERY IMPORTANT
                 calculated[attribute] = value
 
                 results.append({
+
                     "Component": component,
                     "Attribute": attribute,
                     "Type": rule_type,
                     "Formula": formula,
-                    "Value": value
+                    "Value": round(value, 2)
                 })
 
-                progress_made = True
+                progress = True
 
             except Exception as e:
 
                 unresolved.append(rule)
 
-        if not progress_made:
+        if not progress:
             break
 
-        pending_rules = unresolved
+        pending = unresolved
 
-    return results, pending_rules, calculated
+    return results, pending, calculated
 
 
 # =========================================================
@@ -212,6 +303,15 @@ def resolve_component_formulas(
 def show_component_calculator(conn):
 
     st.title("Component Calculator")
+
+    st.markdown(
+        """
+        This page follows the flow:
+
+        Project → Unit → House → Product → Inputs →
+        Rule Engine → Generated Components → Tracking
+        """
+    )
 
     # =====================================================
     # LOAD RULES
@@ -235,7 +335,7 @@ def show_component_calculator(conn):
         return
 
     # =====================================================
-    # PROJECT SELECTION
+    # PROJECTS
     # =====================================================
     projects = pd.read_sql(
         "SELECT DISTINCT project_name FROM projects",
@@ -299,7 +399,7 @@ def show_component_calculator(conn):
     )
 
     # =====================================================
-    # FILTER PRODUCT RULES
+    # FILTER RULES
     # =====================================================
     filtered_rules = rules_df[
         rules_df["product_code"] == selected_product
@@ -310,13 +410,13 @@ def show_component_calculator(conn):
         return
 
     # =====================================================
-    # GET REQUIRED INPUTS
+    # FORMULA INPUTS
     # =====================================================
+    st.subheader("Formula Inputs")
+
     required_inputs = get_required_inputs(
         filtered_rules
     )
-
-    st.subheader("Formula Inputs")
 
     user_inputs = {}
 
@@ -334,22 +434,22 @@ def show_component_calculator(conn):
             )
 
     # =====================================================
-    # CALCULATE BUTTON
+    # GENERATE BUTTON
     # =====================================================
     if st.button(
         "Generate Components",
         type="primary"
     ):
 
-        results, pending, calculated = resolve_component_formulas(
+        results, pending, calculated = resolve_formulas(
             filtered_rules,
             user_inputs
         )
 
         # =================================================
-        # RESULTS
+        # GENERATED COMPONENTS
         # =================================================
-        st.subheader("Generated Components")
+        st.subheader("Generated Component Preview")
 
         if results:
 
@@ -362,10 +462,11 @@ def show_component_calculator(conn):
             )
 
         else:
+
             st.warning("No components generated.")
 
         # =================================================
-        # MISSING VARIABLES
+        # UNRESOLVED RULES
         # =================================================
         if pending:
 
@@ -402,3 +503,5 @@ def show_component_calculator(conn):
         st.subheader("Calculated Variables")
 
         st.json(calculated)
+
+
