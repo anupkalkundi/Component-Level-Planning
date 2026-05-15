@@ -339,10 +339,29 @@ def show_component_calculator(conn, cur):
         FROM product_component_rules
         WHERE product_cat = %s
         AND product_code = %s
-        ORDER BY component, attribute
     """, (product_cat, product_code))
 
     rules = cur.fetchall()
+
+
+    # =====================================================
+    # PYTHON EXECUTION ORDER
+    # =====================================================
+    priority_map = {
+        "Frame Vertical": 1,
+        "Frame Horizontal": 2,
+        "Architrave Vertical": 3,
+        "Architrave Horizontal": 4,
+        "Flush Shutter": 5
+    }
+
+    rules = sorted(
+        rules,
+        key=lambda x: (
+            priority_map.get(x[0], 99),
+            x[1]
+        )
+    )
 
 
     # =====================================================
