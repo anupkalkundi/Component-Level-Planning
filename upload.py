@@ -8,7 +8,7 @@ import streamlit as st
 # =========================================================
 def safe_eval_formula(formula, context):
     """
-    Safely evaluate formula using available variables
+    Safely evaluate formula using already available context values
     """
 
     allowed_names = {
@@ -29,9 +29,6 @@ def safe_eval_formula(formula, context):
 # =========================================================
 def extract_formula_variables(formula):
 
-    if formula is None:
-        return []
-
     ignore_words = {
         "abs",
         "max",
@@ -50,38 +47,23 @@ def extract_formula_variables(formula):
 
 
 # =========================================================
-# NORMALIZE VARIABLE NAME
-# =========================================================
-def normalize_name(value):
-
-    return str(value) \
-        .strip() \
-        .lower() \
-        .replace(" ", "_")
-
-
-# =========================================================
-# GET REQUIRED MANUAL INPUTS
+# GET REQUIRED USER INPUTS
 # =========================================================
 def get_required_manual_inputs(rules_df):
 
     calculated_outputs = set()
 
-    # =============================================
-    # FIND GENERATED VARIABLES
-    # =============================================
     for _, row in rules_df.iterrows():
 
-        component = normalize_name(row["component"])
-        attribute = normalize_name(row["attribute"])
+        component = str(row["component"]).strip()
+        attribute = str(row["attribute"]).strip()
 
-        output_name = f"{component}_{attribute}"
+        output_name = f"{component}_{attribute}" \
+            .lower() \
+            .replace(" ", "_")
 
         calculated_outputs.add(output_name)
 
-    # =============================================
-    # FIND ALL VARIABLES USED IN FORMULAS
-    # =============================================
     all_formula_variables = set()
 
     for _, row in rules_df.iterrows():
@@ -93,12 +75,10 @@ def get_required_manual_inputs(rules_df):
 
         variables = extract_formula_variables(formula)
 
-        for variable in variables:
-            all_formula_variables.add(variable)
+        for v in variables:
+            all_formula_variables.add(v)
 
-    # =============================================
-    # TRUE MANUAL INPUTS
-    # =============================================
+    # ONLY variables not produced by formulas
     manual_inputs = sorted(
         all_formula_variables - calculated_outputs
     )
@@ -107,15 +87,15 @@ def get_required_manual_inputs(rules_df):
 
 
 # =========================================================
-# MAIN ENGINE
+# MAIN COMPONENT CALCULATION ENGINE
 # =========================================================
 def run_component_engine(rules_df, user_inputs):
 
     calculation_context = {}
 
-    # =============================================
+    # =====================================================
     # LOAD USER INPUTS
-    # =============================================
+    # =====================================================
     for key, value in user_inputs.items():
 
         calculation_context[key] = value
@@ -124,12 +104,13 @@ def run_component_engine(rules_df, user_inputs):
 
     errors = []
 
-    # =============================================
+    # =====================================================
     # ITERATIVE SOLVER
-    # =============================================
+    # Handles chained dependencies
+    # =====================================================
     pending_rules = rules_df.copy()
 
-    max_iterations = 100
+    max_iterations = 50
 
     iteration = 0
 
@@ -143,42 +124,41 @@ def run_component_engine(rules_df, user_inputs):
 
             attribute = str(row["attribute"]).strip()
 
-            rule_type = normalize_name(row["type"])
-
             formula = row.get("formula_used")
+
+            rule_type = str(row["type"]).lower().strip()
 
             quantity = row.get("quantity", 1)
 
-            output_name = normalize_name(
-                f"{component}_{attribute}"
-            )
+            output_name = f"{component}_{attribute}" \
+                .lower() \
+                .replace(" ", "_")
 
             try:
 
-                # =====================================
+                # =========================================
                 # FIXED VALUE
-                # =====================================
+                # =========================================
                 if rule_type == "fixed":
 
                     result = quantity
 
-                # =====================================
+                # =========================================
                 # MANUAL VALUE
-                # =====================================
+                # =========================================
                 elif rule_type == "manual":
 
-                    input_name = normalize_name(attribute)
+                    if attribute not in calculation_context:
 
-                    if input_name not in calculation_context:
                         raise Exception(
-                            f"Missing manual input: {input_name}"
+                            f"Missing manual input: {attribute}"
                         )
 
-                    result = calculation_context[input_name]
+                    result = calculation_context[attribute]
 
-                # =====================================
+                # =========================================
                 # FORMULA VALUE
-                # =====================================
+                # =========================================
                 elif rule_type == "formula":
 
                     variables = extract_formula_variables(formula)
@@ -188,7 +168,7 @@ def run_component_engine(rules_df, user_inputs):
                         if v not in calculation_context
                     ]
 
-                    # Wait until next iteration
+                    # skip for next iteration
                     if missing:
                         continue
 
@@ -198,14 +178,13 @@ def run_component_engine(rules_df, user_inputs):
                     )
 
                 else:
-
                     raise Exception(
                         f"Unknown rule type: {rule_type}"
                     )
 
-                # =====================================
-                # SAVE RESULT INTO CONTEXT
-                # =====================================
+                # =========================================
+                # SAVE RESULT
+                # =========================================
                 calculation_context[output_name] = result
 
                 generated_components.append({
@@ -224,28 +203,26 @@ def run_component_engine(rules_df, user_inputs):
                     f"{component} / {attribute}: {str(e)}"
                 )
 
-        # =========================================
-        # REMOVE SOLVED RULES
-        # =========================================
+        # remove solved
         pending_rules = pending_rules.drop(solved_in_this_iteration)
 
-        # =========================================
-        # STOP IF DEADLOCK
-        # =========================================
+        # no progress means dependency deadlock
         if not solved_in_this_iteration:
             break
 
         iteration += 1
 
-    # =============================================
+    # =====================================================
     # FINAL UNSOLVED RULES
-    # =============================================
+    # =====================================================
     if not pending_rules.empty:
 
         for _, row in pending_rules.iterrows():
 
             component = row["component"]
+
             attribute = row["attribute"]
+
             formula = row.get("formula_used")
 
             variables = extract_formula_variables(formula)
@@ -264,25 +241,17 @@ def run_component_engine(rules_df, user_inputs):
 
 
 # =========================================================
-# MAIN STREAMLIT PAGE
+# STREAMLIT UI
 # =========================================================
 def show_component_calculator(rules_df):
 
     st.title("Component Calculator")
 
-    st.markdown(
-        "This page follows the flow:<br>"
-        "Project → Unit → House → Product → Inputs → Rule Engine → Generated Components → Tracking",
-        unsafe_allow_html=True
-    )
-
-    st.divider()
-
-    # =====================================================
-    # REQUIRED INPUTS
-    # =====================================================
     st.subheader("Formula Inputs")
 
+    # =====================================================
+    # AUTO DETECT ONLY TRUE MANUAL INPUTS
+    # =====================================================
     required_inputs = get_required_manual_inputs(rules_df)
 
     user_inputs = {}
@@ -293,27 +262,9 @@ def show_component_calculator(rules_df):
 
         with cols[i % 4]:
 
-            default_value = 0.0
-
-            # =========================================
-            # OPTIONAL DEFAULTS
-            # =========================================
-            default_map = {
-                "clearance": 20.0,
-                "extra_width": 60.0,
-                "extra_length": 60.0,
-                "allowance": 11.0,
-                "groove": 8.0,
-                "cut": 7.0,
-                "offset": 22.0
-            }
-
-            if variable in default_map:
-                default_value = default_map[variable]
-
             value = st.number_input(
                 variable,
-                value=float(default_value),
+                value=0.0,
                 step=1.0,
                 key=variable
             )
@@ -330,18 +281,18 @@ def show_component_calculator(rules_df):
         user_inputs
     )
 
-    # =====================================================
-    # ERRORS
-    # =====================================================
     st.subheader("Generated Component Preview")
 
+    # =====================================================
+    # SHOW ERRORS
+    # =====================================================
     if errors:
 
-        for error in errors:
-            st.error(error)
+        for err in errors:
+            st.error(err)
 
     # =====================================================
-    # GENERATED COMPONENTS
+    # SHOW GENERATED TABLE
     # =====================================================
     if generated_components:
 
@@ -352,18 +303,6 @@ def show_component_calculator(rules_df):
             use_container_width=True,
             hide_index=True
         )
-
-    else:
-
-        st.warning("No components generated")
-
-    # =====================================================
-    # SAVE BUTTON
-    # =====================================================
-    st.button(
-        "Save Generated Components",
-        type="primary"
-    )
 
     # =====================================================
     # DEBUG CONTEXT
@@ -383,65 +322,3 @@ def show_component_calculator(rules_df):
             use_container_width=True,
             hide_index=True
         )
-
-
-# =========================================================
-# SAMPLE TEST DATA
-# =========================================================
-# REMOVE THIS WHEN USING DATABASE
-# =========================================================
-if __name__ == "__main__":
-
-    sample_rules = pd.DataFrame([
-
-        {
-            "component": "Frame Vertical",
-            "attribute": "length",
-            "type": "formula",
-            "formula_used": "opening_length-clearance",
-            "quantity": None
-        },
-
-        {
-            "component": "Frame Horizontal",
-            "attribute": "length",
-            "type": "formula",
-            "formula_used": "opening_width-clearance",
-            "quantity": None
-        },
-
-        {
-            "component": "Architrave Horizontal",
-            "attribute": "length",
-            "type": "formula",
-            "formula_used": "opening_width+extra_width",
-            "quantity": None
-        },
-
-        {
-            "component": "Architrave Vertical",
-            "attribute": "length",
-            "type": "formula",
-            "formula_used": "opening_length+extra_length",
-            "quantity": None
-        },
-
-        {
-            "component": "Flush Shutter",
-            "attribute": "length",
-            "type": "formula",
-            "formula_used": "frame_vertical_length-frame_horizontal_thickness+allowance-groove",
-            "quantity": None
-        },
-
-        {
-            "component": "Flush Shutter",
-            "attribute": "width",
-            "type": "formula",
-            "formula_used": "frame_vertical_length-frame_vertical_thickness+offset-cut",
-            "quantity": None
-        }
-
-    ])
-
-    show_component_calculator(sample_rules)
