@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import re
-import ast
 from decimal import Decimal
 from psycopg2.extras import Json
 
@@ -18,16 +17,52 @@ class FormulaError(Exception):
 # =========================================================
 VARIABLE_ALIASES = {
 
+    # HEIGHT / LENGTH
     "opening_length": "opening_height",
     "height_opening": "opening_height",
 
+    # WIDTH
     "opening_w": "opening_width",
+    "width_opening": "opening_width",
 
+    # CLEARANCE
     "clr": "clearance",
 
-    "extra_width": "allowance",
-    "extra_length": "allowance"
+    # EXTRA VALUES
+    "extra_w": "extra_width",
+    "extra_l": "extra_length",
+
+    # FRAME SHORTCUTS
+    "frame_h_thk": "frame_horizontal_thickness",
+    "frame_v_thk": "frame_vertical_thickness",
+
+    # COMMON SHORTCUTS
+    "allow": "allowance"
 }
+
+
+# =========================================================
+# DEFAULT VARIABLES
+# =========================================================
+DEFAULT_VARIABLES = [
+
+    "opening_height",
+    "opening_width",
+
+    "clearance",
+
+    "extra_width",
+    "extra_length",
+
+    "allowance",
+
+    "frame_horizontal_thickness",
+    "frame_vertical_thickness",
+
+    "groove",
+    "cut",
+    "offset"
+]
 
 
 # =========================================================
@@ -44,11 +79,30 @@ def normalize_variable(var_name):
 
 
 # =========================================================
+# NORMALIZE FORMULA
+# =========================================================
+def normalize_formula(formula):
+
+    formula = str(formula or "").strip()
+
+    for old_var, new_var in VARIABLE_ALIASES.items():
+
+        formula = re.sub(
+            rf"\b{old_var}\b",
+            new_var,
+            formula
+        )
+
+    return formula
+
+
+# =========================================================
 # SAFE EXECUTE
 # =========================================================
 def safe_execute(conn, cur, query, params=None):
 
     try:
+
         cur.execute(query, params or ())
 
     except Exception as e:
@@ -85,18 +139,23 @@ def get_distinct_values(
 
 
 # =========================================================
-# EXTRACT VARIABLES
+# EXTRACT VARIABLES FROM FORMULA
 # =========================================================
 def extract_formula_variables(formula):
 
     if not formula:
         return []
 
+    formula = normalize_formula(formula)
+
     ignore_words = {
         "abs",
         "min",
         "max",
-        "round"
+        "round",
+        "float",
+        "int",
+        "Decimal"
     }
 
     variables = re.findall(
@@ -122,7 +181,7 @@ def extract_formula_variables(formula):
 # =========================================================
 def evaluate_formula(formula, variables):
 
-    formula = str(formula or "").strip()
+    formula = normalize_formula(formula)
 
     if not formula:
         raise FormulaError("Formula empty")
@@ -139,6 +198,7 @@ def evaluate_formula(formula, variables):
     for k, v in variables.items():
 
         if v not in [None, ""]:
+
             clean_vars[k] = float(v)
 
     clean_vars.update(allowed_functions)
@@ -151,7 +211,13 @@ def evaluate_formula(formula, variables):
             clean_vars
         )
 
-        return Decimal(str(result))
+        return Decimal(str(round(result, 2)))
+
+    except NameError as e:
+
+        missing_var = str(e)
+
+        raise FormulaError(f"Missing variable: {missing_var}")
 
     except Exception as e:
 
@@ -165,6 +231,10 @@ def show_component_calculator(conn, cur):
 
     st.title("Component Calculator")
 
+
+    # =====================================================
+    # PROJECTS
+    # =====================================================
     projects = get_distinct_values(
         conn,
         cur,
@@ -174,12 +244,21 @@ def show_component_calculator(conn, cur):
 
     col1, col2, col3, col4 = st.columns(4)
 
+
+    # =====================================================
+    # PROJECT
+    # =====================================================
     with col1:
+
         project_name = st.selectbox(
             "Project",
             projects
         )
 
+
+    # =====================================================
+    # UNIT TYPES
+    # =====================================================
     unit_types = get_distinct_values(
         conn,
         cur,
@@ -190,11 +269,16 @@ def show_component_calculator(conn, cur):
     )
 
     with col2:
+
         unit_type = st.selectbox(
             "Unit Type",
             unit_types
         )
 
+
+    # =====================================================
+    # HOUSES
+    # =====================================================
     houses = get_distinct_values(
         conn,
         cur,
@@ -205,11 +289,16 @@ def show_component_calculator(conn, cur):
     )
 
     with col3:
+
         house_number = st.selectbox(
             "House Number",
             houses
         )
 
+
+    # =====================================================
+    # PRODUCTS
+    # =====================================================
     safe_execute(conn, cur, """
         SELECT DISTINCT product_cat, product_code
         FROM products
@@ -224,13 +313,22 @@ def show_component_calculator(conn, cur):
     ]
 
     with col4:
+
         selected_product = st.selectbox(
             "Product",
             product_options
         )
 
+
+    # =====================================================
+    # SPLIT PRODUCT
+    # =====================================================
     product_cat, product_code = selected_product.split(" | ", 1)
 
+
+    # =====================================================
+    # FETCH RULES
+    # =====================================================
     safe_execute(conn, cur, """
         SELECT
             component,
@@ -246,11 +344,19 @@ def show_component_calculator(conn, cur):
 
     rules = cur.fetchall()
 
+
+    # =====================================================
+    # FORMULA INPUTS
+    # =====================================================
     st.markdown("---")
     st.subheader("Formula Inputs")
 
     required_variables = set()
 
+
+    # =====================================================
+    # EXTRACT VARIABLES FROM FORMULAS
+    # =====================================================
     for rule in rules:
 
         formula = rule[3]
@@ -260,6 +366,35 @@ def show_component_calculator(conn, cur):
         for v in vars_found:
             required_variables.add(v)
 
+
+    # =====================================================
+    # ADD DEFAULT VARIABLES
+    # =====================================================
+    for v in DEFAULT_VARIABLES:
+        required_variables.add(v)
+
+
+    # =====================================================
+    # DEFAULT VALUES
+    # =====================================================
+    default_values = {
+        "opening_height": 1200.0,
+        "opening_width": 2100.0,
+        "clearance": 20.0,
+        "extra_width": 60.0,
+        "extra_length": 60.0,
+        "allowance": 11.0,
+        "frame_horizontal_thickness": 50.0,
+        "frame_vertical_thickness": 50.0,
+        "groove": 8.0,
+        "cut": 7.0,
+        "offset": 22.0
+    }
+
+
+    # =====================================================
+    # INPUT UI
+    # =====================================================
     variables = {}
 
     cols = st.columns(4)
@@ -270,16 +405,28 @@ def show_component_calculator(conn, cur):
 
             variables[variable] = st.number_input(
                 variable,
-                value=0.0,
-                step=1.0
+                value=float(default_values.get(variable, 0.0)),
+                step=1.0,
+                format="%.2f"
             )
+
 
     st.markdown("---")
 
+
+    # =====================================================
+    # GENERATE BUTTON
+    # =====================================================
     if st.button("Generate Components"):
 
         preview_rows = []
 
+        errors_found = False
+
+
+        # =================================================
+        # LOOP RULES
+        # =================================================
         for rule in rules:
 
             component = rule[0]
@@ -290,9 +437,14 @@ def show_component_calculator(conn, cur):
 
             value = None
 
+
+            # =============================================
+            # FORMULA TYPE
+            # =============================================
             if rule_type == "formula":
 
                 try:
+
                     value = evaluate_formula(
                         formula,
                         variables
@@ -300,22 +452,49 @@ def show_component_calculator(conn, cur):
 
                 except Exception as e:
 
+                    errors_found = True
+
                     st.error(
                         f"{component} / {attribute}: {e}"
                     )
 
+
+            # =============================================
+            # FIXED TYPE
+            # =============================================
             elif rule_type == "fixed":
 
                 value = quantity
 
+
+            # =============================================
+            # APPEND ROW
+            # =============================================
             preview_rows.append({
                 "Component": component,
                 "Attribute": attribute,
+                "Formula": formula,
                 "Value": value
             })
 
+
+        # =================================================
+        # DISPLAY TABLE
+        # =================================================
+        st.subheader("Generated Components")
+
+        df_preview = pd.DataFrame(preview_rows)
+
         st.dataframe(
-            pd.DataFrame(preview_rows),
+            df_preview,
             use_container_width=True,
             hide_index=True
         )
+
+
+        # =================================================
+        # SUCCESS MESSAGE
+        # =================================================
+        if not errors_found:
+
+            st.success("All component formulas calculated successfully")
