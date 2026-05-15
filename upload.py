@@ -31,6 +31,16 @@ def clean_int(value):
         return None
 
 
+def normalize_columns(df):
+    df.columns = [
+        str(col).strip().lower()
+        .replace(" ", "_")
+        .replace("-", "_")
+        for col in df.columns
+    ]
+    return df
+
+
 def normalize_rule_type(value):
     value = clean_text(value)
 
@@ -74,6 +84,51 @@ def extract_formula_variables(formula):
 
 
 # ================= DB INSERTS =================
+def insert_project(conn, cur, project_name):
+    safe_execute(conn, cur, """
+        INSERT INTO projects (project_name)
+        VALUES (%s)
+        ON CONFLICT (project_name) DO NOTHING
+    """, (project_name,))
+
+
+def insert_unit_type(conn, cur, project_name, unit_type):
+    safe_execute(conn, cur, """
+        INSERT INTO unit_types (project_name, unit_type)
+        SELECT %s, %s
+        WHERE NOT EXISTS (
+            SELECT 1 FROM unit_types
+            WHERE project_name = %s
+            AND unit_type = %s
+        )
+    """, (
+        project_name,
+        unit_type,
+        project_name,
+        unit_type
+    ))
+
+
+def insert_house(conn, cur, project_name, unit_type, house_number):
+    safe_execute(conn, cur, """
+        INSERT INTO houses (project_name, unit_type, house_number)
+        SELECT %s, %s, %s
+        WHERE NOT EXISTS (
+            SELECT 1 FROM houses
+            WHERE project_name = %s
+            AND unit_type = %s
+            AND house_number = %s
+        )
+    """, (
+        project_name,
+        unit_type,
+        house_number,
+        project_name,
+        unit_type,
+        house_number
+    ))
+
+
 def insert_product(conn, cur, product_cat, product_code):
     safe_execute(conn, cur, """
         INSERT INTO products
@@ -189,14 +244,18 @@ def insert_component_input(conn, cur, component, input_name, input_type):
     ))
 
 
-# ================= READ EXCEL =================
+# ================= READ EXCEL FILES =================
 def read_component_architecture(uploaded_file):
     raw_df = pd.read_excel(uploaded_file, sheet_name=0, header=None)
 
     header_row_index = None
 
     for index, row in raw_df.iterrows():
-        row_values = [str(v).strip().lower() for v in row.tolist() if not pd.isna(v)]
+        row_values = [
+            str(value).strip().lower()
+            for value in row.tolist()
+            if not pd.isna(value)
+        ]
 
         if "product_cat" in row_values and "product_code" in row_values:
             header_row_index = index
@@ -206,13 +265,7 @@ def read_component_architecture(uploaded_file):
         raise Exception("Could not find header row with Product_Cat and Product_Code")
 
     df = pd.read_excel(uploaded_file, sheet_name=0, header=header_row_index)
-
-    df.columns = [
-        str(col).strip().lower()
-        .replace(" ", "_")
-        .replace("-", "_")
-        for col in df.columns
-    ]
+    df = normalize_columns(df)
 
     rename_map = {
         "product_cat": "product_cat",
@@ -257,33 +310,200 @@ def read_component_architecture(uploaded_file):
         how="any"
     )
 
+    df["type"] = df["type"].apply(normalize_rule_type)
+
     return df
 
 
-# ================= UPLOAD PAGE =================
-def show_upload(conn, cur):
-    st.title("Upload Component Architecture")
+def read_project_master(uploaded_file):
+    df = pd.read_excel(uploaded_file, sheet_name=0)
+    df = normalize_columns(df)
 
-    st.markdown("""
-    Upload your component-level Excel file.
+    rename_map = {
+        "project_name": "project_name",
+        "unit_name": "unit_type",
+        "unit_type": "unit_type",
+        "house_no": "house_number",
+        "house_number": "house_number",
+        "product_category": "product_cat",
+        "product_cat": "product_cat",
+        "product_code": "product_code",
+        "orientation": "orientation",
+        "quantity": "quantity"
+    }
 
-    Correct flow:
+    df = df.rename(columns=rename_map)
 
-    1. Read Product Category  
-    2. Split Product Codes  
-    3. Save Products  
-    4. Save Component Rules  
-    5. Auto-create Formula Variables  
-    6. Auto-create Component Inputs  
-    """)
+    required_columns = [
+        "project_name",
+        "unit_type",
+        "house_number",
+        "product_cat",
+        "product_code",
+        "orientation",
+        "quantity"
+    ]
 
-    st.info(
-        "This upload is for your Excel format: "
-        "Product_Cat, Product_Code, Components, Attribute, Type, Formula_Used, Quanity"
+    missing = [col for col in required_columns if col not in df.columns]
+
+    if missing:
+        raise Exception(f"Missing columns: {', '.join(missing)}")
+
+    df = df[required_columns]
+
+    df = df.dropna(
+        subset=[
+            "project_name",
+            "unit_type",
+            "house_number"
+        ],
+        how="any"
     )
 
+    return df
+
+
+# ================= UPLOAD PROCESSORS =================
+def upload_component_architecture(conn, cur, df):
+    total_rules = 0
+    total_products = set()
+    total_variables = set()
+    total_inputs = set()
+
+    for _, row in df.iterrows():
+        product_cat = clean_text(row["product_cat"])
+        product_codes = split_product_codes(row["product_code"])
+        component = clean_text(row["component"])
+        attribute = clean_text(row["attribute"])
+        rule_type = normalize_rule_type(row["type"])
+        formula_used = clean_text(row["formula_used"])
+        quantity = clean_int(row["quantity"])
+
+        if not product_cat or not product_codes or not component or not attribute or not rule_type:
+            continue
+
+        for product_code in product_codes:
+            insert_product(
+                conn,
+                cur,
+                product_cat,
+                product_code
+            )
+
+            total_products.add((product_cat, product_code))
+
+            insert_component_rule(
+                conn,
+                cur,
+                product_cat,
+                product_code,
+                component,
+                attribute,
+                rule_type,
+                formula_used,
+                quantity
+            )
+
+            total_rules += 1
+
+        if formula_used:
+            for variable_name in extract_formula_variables(formula_used):
+                insert_formula_variable(conn, cur, variable_name)
+                total_variables.add(variable_name)
+
+        insert_component_input(
+            conn,
+            cur,
+            component,
+            attribute,
+            rule_type
+        )
+
+        total_inputs.add((component, attribute, rule_type))
+
+    conn.commit()
+
+    return {
+        "Products": len(total_products),
+        "Component Rules": total_rules,
+        "Formula Variables": len(total_variables),
+        "Component Inputs": len(total_inputs)
+    }
+
+
+def upload_project_master(conn, cur, df):
+    total_projects = set()
+    total_units = set()
+    total_houses = set()
+    total_products = set()
+
+    for _, row in df.iterrows():
+        project_name = clean_text(row["project_name"])
+        unit_type = clean_text(row["unit_type"])
+        house_number = clean_text(row["house_number"])
+        product_cat = clean_text(row["product_cat"])
+        product_code = clean_text(row["product_code"])
+
+        if not project_name or not unit_type or not house_number:
+            continue
+
+        insert_project(conn, cur, project_name)
+        insert_unit_type(conn, cur, project_name, unit_type)
+        insert_house(conn, cur, project_name, unit_type, house_number)
+
+        total_projects.add(project_name)
+        total_units.add((project_name, unit_type))
+        total_houses.add((project_name, unit_type, house_number))
+
+        if product_cat and product_code:
+            insert_product(conn, cur, product_cat, product_code)
+            total_products.add((product_cat, product_code))
+
+    conn.commit()
+
+    return {
+        "Projects": len(total_projects),
+        "Unit Types": len(total_units),
+        "Houses": len(total_houses),
+        "Products": len(total_products)
+    }
+
+
+# ================= MAIN PAGE =================
+def show_upload(conn, cur):
+    st.title("Upload Master Data")
+
+    st.markdown("""
+    Upload the two master files in this order:
+
+    1. **Component Architecture**  
+       Saves products, component rules, formula variables, and component inputs.
+
+    2. **Project Master**  
+       Saves projects, unit types, houses, and product codes.
+    """)
+
+    upload_type = st.selectbox(
+        "Select Upload Type",
+        [
+            "Component Architecture",
+            "Project Master"
+        ]
+    )
+
+    if upload_type == "Component Architecture":
+        st.info(
+            "Expected Excel format: Product_Cat, Product_Code, Components, "
+            "Attribute, Type, Formula_Used, Quanity"
+        )
+    else:
+        st.info(
+            "Expected Excel format: project_name, unit_name, house_no, "
+            "product_category, product_code, orientation, quantity"
+        )
+
     uploaded_file = st.file_uploader(
-        "Upload Component Architecture Excel",
+        "Upload Excel File",
         type=["xlsx", "xls"]
     )
 
@@ -291,85 +511,31 @@ def show_upload(conn, cur):
         return
 
     try:
-        df = read_component_architecture(uploaded_file)
+        if upload_type == "Component Architecture":
+            df = read_component_architecture(uploaded_file)
+        else:
+            df = read_project_master(uploaded_file)
+
     except Exception as e:
         st.error(f"Excel read failed: {e}")
         return
 
-    preview_df = df.copy()
-    preview_df["type"] = preview_df["type"].apply(normalize_rule_type)
+    st.subheader("Preview")
+    st.dataframe(df.head(100), use_container_width=True, hide_index=True)
 
-    st.subheader("Preview From Excel")
-    st.dataframe(preview_df, use_container_width=True, hide_index=True)
-
-    total_rules = 0
-    total_products = set()
-    total_variables = set()
-    total_inputs = set()
-
-    if st.button("Upload Component Rules", type="primary"):
+    if st.button("Upload to Database", type="primary"):
         try:
-            for _, row in preview_df.iterrows():
-                product_cat = clean_text(row["product_cat"])
-                product_codes = split_product_codes(row["product_code"])
-                component = clean_text(row["component"])
-                attribute = clean_text(row["attribute"])
-                rule_type = normalize_rule_type(row["type"])
-                formula_used = clean_text(row["formula_used"])
-                quantity = clean_int(row["quantity"])
-
-                if not product_cat or not product_codes or not component or not attribute or not rule_type:
-                    continue
-
-                for product_code in product_codes:
-                    insert_product(
-                        conn,
-                        cur,
-                        product_cat,
-                        product_code
-                    )
-
-                    total_products.add((product_cat, product_code))
-
-                    insert_component_rule(
-                        conn,
-                        cur,
-                        product_cat,
-                        product_code,
-                        component,
-                        attribute,
-                        rule_type,
-                        formula_used,
-                        quantity
-                    )
-
-                    total_rules += 1
-
-                if formula_used:
-                    for variable_name in extract_formula_variables(formula_used):
-                        insert_formula_variable(conn, cur, variable_name)
-                        total_variables.add(variable_name)
-
-                insert_component_input(
-                    conn,
-                    cur,
-                    component,
-                    attribute,
-                    rule_type
-                )
-
-                total_inputs.add((component, attribute, rule_type))
-
-            conn.commit()
+            if upload_type == "Component Architecture":
+                result = upload_component_architecture(conn, cur, df)
+            else:
+                result = upload_project_master(conn, cur, df)
 
             st.success("Upload completed successfully.")
 
-            col1, col2, col3, col4 = st.columns(4)
+            cols = st.columns(len(result))
 
-            col1.metric("Products", len(total_products))
-            col2.metric("Component Rules", total_rules)
-            col3.metric("Formula Variables", len(total_variables))
-            col4.metric("Component Inputs", len(total_inputs))
+            for index, (label, value) in enumerate(result.items()):
+                cols[index].metric(label, value)
 
         except Exception as e:
             conn.rollback()
