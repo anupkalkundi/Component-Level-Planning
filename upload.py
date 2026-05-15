@@ -1,323 +1,169 @@
-import streamlit as st
-import pandas as pd
 import re
-import math
+import pandas as pd
+import streamlit as st
 
 
-# =========================================================
-# VARIABLE ALIASES
-# =========================================================
-VARIABLE_ALIASES = {
-
-    # HEIGHT / LENGTH
-    "opening_length": "opening_height",
-    "height_opening": "opening_height",
-
-    # WIDTH
-    "opening_w": "opening_width",
-
-    # CLEARANCE
-    "clr": "clearance",
-
-    # ALLOWANCE
-    "extra_width": "allowance",
-    "extra_length": "allowance",
-
-    # FRAME
-    "vertical_length": "frame_vertical_length",
-    "horizontal_length": "frame_horizontal_length"
-}
+# ================= SAFE EXECUTE =================
+def safe_execute(conn, cur, query, params=None):
+    try:
+        cur.execute(query, params or ())
+    except Exception as e:
+        conn.rollback()
+        raise e
 
 
-# =========================================================
-# NORMALIZE VARIABLE
-# =========================================================
-def normalize_variable(var_name):
+# ================= CLEAN HELPERS =================
+def clean_text(value):
+    if pd.isna(value):
+        return None
 
-    var_name = str(var_name).strip()
-
-    return VARIABLE_ALIASES.get(
-        var_name,
-        var_name
-    )
+    value = str(value).strip()
+    return value if value else None
 
 
-# =========================================================
-# NORMALIZE FORMULA
-# =========================================================
-def normalize_formula(formula):
+def clean_int(value):
+    if pd.isna(value) or value == "":
+        return None
 
-    if not formula:
-        return formula
-
-    formula = str(formula)
-
-    for old, new in VARIABLE_ALIASES.items():
-
-        formula = re.sub(
-            rf"\b{old}\b",
-            new,
-            formula
-        )
-
-    return formula
+    try:
+        return int(float(value))
+    except Exception:
+        return None
 
 
-# =========================================================
-# EXTRACT VARIABLES
-# =========================================================
+def normalize_columns(df):
+    df.columns = [
+        str(col).strip().lower()
+        .replace(" ", "_")
+        .replace("-", "_")
+        for col in df.columns
+    ]
+    return df
+
+
+def normalize_rule_type(value):
+    value = clean_text(value)
+
+    if not value:
+        return None
+
+    value = value.lower().strip()
+
+    if value in ["fomula", "formula", "formulas"]:
+        return "formula"
+
+    if value in ["manual", "input", "user_input"]:
+        return "manual"
+
+    if value in ["fixed", "constant", "qty"]:
+        return "fixed"
+
+    return value
+
+
+def split_product_codes(value):
+    value = clean_text(value)
+
+    if not value:
+        return []
+
+    return [code.strip() for code in value.split(",") if code.strip()]
+
+
 def extract_formula_variables(formula):
+    formula = clean_text(formula)
 
     if not formula:
         return []
 
-    ignore_words = {
-        "abs",
-        "min",
-        "max",
-        "round",
-        "math"
-    }
+    ignore_words = {"abs", "max", "min", "round"}
 
-    variables = re.findall(
-        r"\b[A-Za-z_][A-Za-z0-9_]*\b",
-        str(formula)
-    )
+    variables = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", formula)
 
-    cleaned = []
-
-    for v in variables:
-
-        if v not in ignore_words:
-
-            cleaned.append(
-                normalize_variable(v)
-            )
-
-    return sorted(list(set(cleaned)))
+    return sorted(set(v for v in variables if v not in ignore_words))
 
 
-# =========================================================
-# SAFE FORMULA EVALUATOR
-# =========================================================
-def evaluate_formula(
-    formula,
-    variables
+# ================= DATABASE INSERTS =================
+def insert_project(conn, cur, project_name):
+    safe_execute(conn, cur, """
+        INSERT INTO projects (project_name)
+        VALUES (%s)
+        ON CONFLICT (project_name) DO NOTHING
+    """, (project_name,))
+
+
+def insert_unit_type(conn, cur, project_name, unit_type):
+    safe_execute(conn, cur, """
+        INSERT INTO unit_types (project_name, unit_type)
+        SELECT %s, %s
+        WHERE NOT EXISTS (
+            SELECT 1 FROM unit_types
+            WHERE project_name = %s
+            AND unit_type = %s
+        )
+    """, (
+        project_name,
+        unit_type,
+        project_name,
+        unit_type
+    ))
+
+
+def insert_house(conn, cur, project_name, unit_type, house_number):
+    safe_execute(conn, cur, """
+        INSERT INTO houses (project_name, unit_type, house_number)
+        SELECT %s, %s, %s
+        WHERE NOT EXISTS (
+            SELECT 1 FROM houses
+            WHERE project_name = %s
+            AND unit_type = %s
+            AND house_number = %s
+        )
+    """, (
+        project_name,
+        unit_type,
+        house_number,
+        project_name,
+        unit_type,
+        house_number
+    ))
+
+
+def insert_product(conn, cur, product_cat, product_code):
+    safe_execute(conn, cur, """
+        INSERT INTO products
+        (
+            product_cat,
+            product_code
+        )
+        SELECT %s, %s
+        WHERE NOT EXISTS (
+            SELECT 1 FROM products
+            WHERE product_cat = %s
+            AND product_code = %s
+        )
+    """, (
+        product_cat,
+        product_code,
+        product_cat,
+        product_code
+    ))
+
+
+def insert_component_rule(
+    conn,
+    cur,
+    product_cat,
+    product_code,
+    component,
+    attribute,
+    rule_type,
+    formula_used,
+    quantity
 ):
-
-    formula = normalize_formula(formula)
-
-    allowed_names = {
-        "abs": abs,
-        "min": min,
-        "max": max,
-        "round": round,
-        "math": math
-    }
-
-    allowed_names.update(variables)
-
-    return eval(
-        formula,
-        {"__builtins__": {}},
-        allowed_names
-    )
-
-
-# =========================================================
-# GET REQUIRED INPUTS
-# =========================================================
-def get_required_inputs(rules_df):
-
-    all_variables = set()
-
-    for formula in rules_df["formula_used"].dropna():
-
-        vars_found = extract_formula_variables(
-            formula
-        )
-
-        for var in vars_found:
-            all_variables.add(var)
-
-    calculated_attributes = set()
-
-    for attr in rules_df["attribute"].dropna():
-
-        calculated_attributes.add(
-            normalize_variable(attr)
-        )
-
-    required_inputs = sorted(
-        list(
-            all_variables - calculated_attributes
-        )
-    )
-
-    return required_inputs
-
-
-# =========================================================
-# RESOLVE FORMULAS RECURSIVELY
-# =========================================================
-def resolve_formulas(
-    rules_df,
-    user_inputs
-):
-
-    calculated = {}
-
-    # =========================================
-    # SAVE USER INPUTS
-    # =========================================
-    for k, v in user_inputs.items():
-
-        calculated[
-            normalize_variable(k)
-        ] = v
-
-    results = []
-
-    pending = rules_df.to_dict("records")
-
-    iteration = 0
-
-    max_iterations = 100
-
-    while pending and iteration < max_iterations:
-
-        iteration += 1
-
-        unresolved = []
-
-        progress = False
-
-        for rule in pending:
-
-            try:
-
-                component = str(
-                    rule["component"]
-                ).strip()
-
-                attribute = normalize_variable(
-                    rule["attribute"]
-                )
-
-                rule_type = str(
-                    rule["type"]
-                ).lower().strip()
-
-                formula = normalize_formula(
-                    rule.get("formula_used")
-                )
-
-                quantity = rule.get("quantity")
-
-                # =====================================
-                # FIXED RULE
-                # =====================================
-                if rule_type == "fixed":
-
-                    value = float(quantity)
-
-                # =====================================
-                # MANUAL RULE
-                # =====================================
-                elif rule_type == "manual":
-
-                    if attribute not in calculated:
-
-                        unresolved.append(rule)
-                        continue
-
-                    value = calculated[attribute]
-
-                # =====================================
-                # FORMULA RULE
-                # =====================================
-                elif rule_type == "formula":
-
-                    required = extract_formula_variables(
-                        formula
-                    )
-
-                    missing = [
-                        var
-                        for var in required
-                        if var not in calculated
-                    ]
-
-                    if missing:
-
-                        unresolved.append(rule)
-                        continue
-
-                    value = evaluate_formula(
-                        formula,
-                        calculated
-                    )
-
-                else:
-
-                    unresolved.append(rule)
-                    continue
-
-                # =====================================
-                # SAVE RESULTS
-                # =====================================
-                result_key = (
-                    f"{component}_{attribute}"
-                )
-
-                calculated[result_key] = value
-
-                calculated[attribute] = value
-
-                results.append({
-
-                    "Component": component,
-                    "Attribute": attribute,
-                    "Type": rule_type,
-                    "Formula": formula,
-                    "Value": round(value, 2)
-                })
-
-                progress = True
-
-            except Exception as e:
-
-                unresolved.append(rule)
-
-        if not progress:
-            break
-
-        pending = unresolved
-
-    return results, pending, calculated
-
-
-# =========================================================
-# MAIN COMPONENT CALCULATOR PAGE
-# =========================================================
-def show_component_calculator(conn):
-
-    st.title("Component Calculator")
-
-    st.markdown(
-        """
-        This page follows the flow:
-
-        Project → Unit → House → Product → Inputs →
-        Rule Engine → Generated Components → Tracking
-        """
-    )
-
-    # =====================================================
-    # LOAD RULES
-    # =====================================================
-    query = """
-        SELECT
+    safe_execute(conn, cur, """
+        INSERT INTO product_component_rules
+        (
             product_cat,
             product_code,
             component,
@@ -325,183 +171,386 @@ def show_component_calculator(conn):
             type,
             formula_used,
             quantity
-        FROM product_component_rules
-    """
+        )
+        SELECT %s, %s, %s, %s, %s, %s, %s
+        WHERE NOT EXISTS (
+            SELECT 1 FROM product_component_rules
+            WHERE product_cat = %s
+            AND product_code = %s
+            AND component = %s
+            AND attribute = %s
+            AND type = %s
+            AND COALESCE(formula_used, '') = COALESCE(%s, '')
+            AND COALESCE(quantity, -1) = COALESCE(%s, -1)
+        )
+    """, (
+        product_cat,
+        product_code,
+        component,
+        attribute,
+        rule_type,
+        formula_used,
+        quantity,
+        product_cat,
+        product_code,
+        component,
+        attribute,
+        rule_type,
+        formula_used,
+        quantity
+    ))
 
-    rules_df = pd.read_sql(query, conn)
 
-    if rules_df.empty:
-        st.warning("No component rules found.")
-        return
+def insert_formula_variable(conn, cur, variable_name):
+    safe_execute(conn, cur, """
+        INSERT INTO formula_variables
+        (
+            variable_name,
+            description
+        )
+        VALUES (%s, %s)
+        ON CONFLICT (variable_name) DO NOTHING
+    """, (
+        variable_name,
+        "Auto-created from uploaded formula rule"
+    ))
 
-    # =====================================================
-    # PROJECTS
-    # =====================================================
-    projects = pd.read_sql(
-        "SELECT DISTINCT project_name FROM projects",
-        conn
-    )["project_name"].tolist()
 
-    selected_project = st.selectbox(
-        "Project",
-        projects
+def insert_component_input(conn, cur, component, input_name, input_type):
+    safe_execute(conn, cur, """
+        INSERT INTO component_inputs
+        (
+            component,
+            input_name,
+            input_type
+        )
+        SELECT %s, %s, %s
+        WHERE NOT EXISTS (
+            SELECT 1 FROM component_inputs
+            WHERE component = %s
+            AND input_name = %s
+            AND input_type = %s
+        )
+    """, (
+        component,
+        input_name,
+        input_type,
+        component,
+        input_name,
+        input_type
+    ))
+
+
+# ================= READ COMPONENT ARCHITECTURE =================
+def read_component_architecture(uploaded_file):
+    raw_df = pd.read_excel(uploaded_file, sheet_name=0, header=None)
+
+    header_row_index = None
+
+    for index, row in raw_df.iterrows():
+        row_values = [
+            str(value).strip().lower()
+            for value in row.tolist()
+            if not pd.isna(value)
+        ]
+
+        if "product_cat" in row_values and "product_code" in row_values:
+            header_row_index = index
+            break
+
+    if header_row_index is None:
+        raise Exception("Could not find header row with Product_Cat and Product_Code")
+
+    df = pd.read_excel(uploaded_file, sheet_name=0, header=header_row_index)
+    df = normalize_columns(df)
+
+    rename_map = {
+        "product_cat": "product_cat",
+        "product_code": "product_code",
+        "components": "component",
+        "component": "component",
+        "attribute": "attribute",
+        "type": "type",
+        "formula_used": "formula_used",
+        "formula": "formula_used",
+        "quanity": "quantity",
+        "quantity": "quantity"
+    }
+
+    df = df.rename(columns=rename_map)
+
+    required_columns = [
+        "product_cat",
+        "product_code",
+        "component",
+        "attribute",
+        "type",
+        "formula_used",
+        "quantity"
+    ]
+
+    missing = [col for col in required_columns if col not in df.columns]
+
+    if missing:
+        raise Exception(f"Missing columns: {', '.join(missing)}")
+
+    df = df[required_columns]
+
+    df = df.dropna(
+        subset=[
+            "product_cat",
+            "product_code",
+            "component",
+            "attribute",
+            "type"
+        ],
+        how="any"
     )
 
-    # =====================================================
-    # UNIT TYPES
-    # =====================================================
-    units = pd.read_sql(
-        f"""
-        SELECT DISTINCT unit_type
-        FROM unit_types
-        WHERE project_name = '{selected_project}'
-        """,
-        conn
-    )["unit_type"].tolist()
+    df["type"] = df["type"].apply(normalize_rule_type)
 
-    selected_unit = st.selectbox(
-        "Unit Type",
-        units
+    return df
+
+
+# ================= READ PROJECT MASTER =================
+def read_project_master(uploaded_file):
+    df = pd.read_excel(uploaded_file, sheet_name=0)
+    df = normalize_columns(df)
+
+    rename_map = {
+        "project_name": "project_name",
+        "unit_name": "unit_type",
+        "unit_type": "unit_type",
+        "house_no": "house_number",
+        "house_number": "house_number",
+        "product_category": "product_cat",
+        "product_cat": "product_cat",
+        "product_code": "product_code",
+        "orientation": "orientation",
+        "quantity": "quantity"
+    }
+
+    df = df.rename(columns=rename_map)
+
+    required_columns = [
+        "project_name",
+        "unit_type",
+        "house_number",
+        "product_cat",
+        "product_code",
+        "orientation",
+        "quantity"
+    ]
+
+    missing = [col for col in required_columns if col not in df.columns]
+
+    if missing:
+        raise Exception(f"Missing columns: {', '.join(missing)}")
+
+    df = df[required_columns]
+
+    df = df.dropna(
+        subset=[
+            "project_name",
+            "unit_type",
+            "house_number"
+        ],
+        how="any"
     )
 
-    # =====================================================
-    # HOUSES
-    # =====================================================
-    houses = pd.read_sql(
-        f"""
-        SELECT DISTINCT house_number
-        FROM houses
-        WHERE project_name = '{selected_project}'
-        AND unit_type = '{selected_unit}'
-        """,
-        conn
-    )["house_number"].tolist()
+    return df
 
-    selected_house = st.selectbox(
-        "House Number",
-        houses
-    )
 
-    # =====================================================
-    # PRODUCTS
-    # =====================================================
-    products = pd.read_sql(
-        """
-        SELECT DISTINCT product_code
-        FROM products
-        """,
-        conn
-    )["product_code"].tolist()
+# ================= UPLOAD COMPONENT ARCHITECTURE =================
+def upload_component_architecture(conn, cur, df):
+    total_products = set()
+    total_rules = 0
+    total_variables = set()
+    total_inputs = set()
 
-    selected_product = st.selectbox(
-        "Product",
-        products
-    )
+    for _, row in df.iterrows():
+        product_cat = clean_text(row["product_cat"])
+        product_codes = split_product_codes(row["product_code"])
+        component = clean_text(row["component"])
+        attribute = clean_text(row["attribute"])
+        rule_type = normalize_rule_type(row["type"])
+        formula_used = clean_text(row["formula_used"])
+        quantity = clean_int(row["quantity"])
 
-    # =====================================================
-    # FILTER RULES
-    # =====================================================
-    filtered_rules = rules_df[
-        rules_df["product_code"] == selected_product
-    ].copy()
+        if not product_cat or not product_codes or not component or not attribute or not rule_type:
+            continue
 
-    if filtered_rules.empty:
-        st.error("No rules found.")
-        return
-
-    # =====================================================
-    # FORMULA INPUTS
-    # =====================================================
-    st.subheader("Formula Inputs")
-
-    required_inputs = get_required_inputs(
-        filtered_rules
-    )
-
-    user_inputs = {}
-
-    cols = st.columns(4)
-
-    for idx, variable in enumerate(required_inputs):
-
-        with cols[idx % 4]:
-
-            user_inputs[variable] = st.number_input(
-                variable,
-                value=0.0,
-                step=1.0,
-                key=variable
+        for product_code in product_codes:
+            insert_product(
+                conn,
+                cur,
+                product_cat,
+                product_code
             )
 
-    # =====================================================
-    # GENERATE BUTTON
-    # =====================================================
-    if st.button(
-        "Generate Components",
-        type="primary"
-    ):
+            total_products.add((product_cat, product_code))
 
-        results, pending, calculated = resolve_formulas(
-            filtered_rules,
-            user_inputs
+            insert_component_rule(
+                conn,
+                cur,
+                product_cat,
+                product_code,
+                component,
+                attribute,
+                rule_type,
+                formula_used,
+                quantity
+            )
+
+            total_rules += 1
+
+        if formula_used:
+            for variable_name in extract_formula_variables(formula_used):
+                insert_formula_variable(conn, cur, variable_name)
+                total_variables.add(variable_name)
+
+        insert_component_input(
+            conn,
+            cur,
+            component,
+            attribute,
+            rule_type
         )
 
-        # =================================================
-        # GENERATED COMPONENTS
-        # =================================================
-        st.subheader("Generated Component Preview")
+        total_inputs.add((component, attribute, rule_type))
 
-        if results:
+    conn.commit()
 
-            result_df = pd.DataFrame(results)
+    return {
+        "Products": len(total_products),
+        "Component Rules": total_rules,
+        "Formula Variables": len(total_variables),
+        "Component Inputs": len(total_inputs)
+    }
 
-            st.dataframe(
-                result_df,
-                use_container_width=True,
-                hide_index=True
+
+# ================= UPLOAD PROJECT MASTER =================
+def upload_project_master(conn, cur, df):
+    total_projects = set()
+    total_units = set()
+    total_houses = set()
+    total_products = set()
+
+    for _, row in df.iterrows():
+        project_name = clean_text(row["project_name"])
+        unit_type = clean_text(row["unit_type"])
+        house_number = clean_text(row["house_number"])
+        product_cat = clean_text(row["product_cat"])
+        product_code = clean_text(row["product_code"])
+
+        if not project_name or not unit_type or not house_number:
+            continue
+
+        insert_project(conn, cur, project_name)
+        insert_unit_type(conn, cur, project_name, unit_type)
+        insert_house(conn, cur, project_name, unit_type, house_number)
+
+        total_projects.add(project_name)
+        total_units.add((project_name, unit_type))
+        total_houses.add((project_name, unit_type, house_number))
+
+        if product_cat and product_code:
+            insert_product(conn, cur, product_cat, product_code)
+            total_products.add((product_cat, product_code))
+
+    conn.commit()
+
+    return {
+        "Projects": len(total_projects),
+        "Unit Types": len(total_units),
+        "Houses": len(total_houses),
+        "Products": len(total_products)
+    }
+
+
+# ================= MAIN UPLOAD PAGE =================
+def show_upload(conn, cur):
+    st.title("Master Database Upload")
+
+    st.markdown("""
+    This page builds the master database required by the component calculation engine.
+
+    **Master database contains:**
+
+    - Products
+    - Components
+    - Formula rules
+    - Quantity rules
+    - Product mapping
+    - Project / Unit / House mapping
+    """)
+
+    upload_type = st.selectbox(
+        "Select Master Upload",
+        [
+            "Component Architecture",
+            "Project Master"
+        ]
+    )
+
+    if upload_type == "Component Architecture":
+        st.info(
+            "Upload component architecture Excel. "
+            "This saves products, components, formula rules, quantity rules, "
+            "formula variables, and component inputs."
+        )
+
+        with st.expander("Expected Component Architecture Columns", expanded=True):
+            st.code(
+                "Product_Cat | Product_Code | Components | Attribute | Type | Formula_Used | Quanity"
             )
 
+    else:
+        st.info(
+            "Upload project master Excel. "
+            "This saves project, unit type, house number, product category, and product code mapping."
+        )
+
+        with st.expander("Expected Project Master Columns", expanded=True):
+            st.code(
+                "project_name | unit_name | house_no | product_category | product_code | orientation | quantity"
+            )
+
+    uploaded_file = st.file_uploader(
+        "Upload Excel File",
+        type=["xlsx", "xls"]
+    )
+
+    if uploaded_file is None:
+        return
+
+    try:
+        if upload_type == "Component Architecture":
+            df = read_component_architecture(uploaded_file)
         else:
+            df = read_project_master(uploaded_file)
 
-            st.warning("No components generated.")
+    except Exception as e:
+        st.error(f"Excel read failed: {e}")
+        return
 
-        # =================================================
-        # UNRESOLVED RULES
-        # =================================================
-        if pending:
+    st.subheader("Preview")
+    st.dataframe(df.head(100), use_container_width=True, hide_index=True)
 
-            st.subheader("Unresolved Rules")
+    if st.button("Upload to Master Database", type="primary"):
+        try:
+            if upload_type == "Component Architecture":
+                result = upload_component_architecture(conn, cur, df)
+            else:
+                result = upload_project_master(conn, cur, df)
 
-            for rule in pending:
+            st.success("Master database updated successfully.")
 
-                formula = rule.get("formula_used")
+            cols = st.columns(len(result))
 
-                missing = []
+            for index, (label, value) in enumerate(result.items()):
+                cols[index].metric(label, value)
 
-                if formula:
-
-                    required = extract_formula_variables(
-                        formula
-                    )
-
-                    missing = [
-                        var
-                        for var in required
-                        if var not in calculated
-                    ]
-
-                st.error(
-                    f"{rule['component']} / "
-                    f"{rule['attribute']} → "
-                    f"Missing variables: "
-                    f"{', '.join(missing)}"
-                )
-
-        # =================================================
-        # DEBUG VARIABLES
-        # =================================================
-        st.subheader("Calculated Variables")
-
-        st.json(calculated)
-
-
+        except Exception as e:
+            conn.rollback()
+            st.error(f"Upload failed: {e}")
