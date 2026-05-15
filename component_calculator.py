@@ -375,20 +375,37 @@ def show_component_calculator(conn, cur):
 
 
     # =====================================================
+    # REMOVE GENERATED VARIABLES
+    # =====================================================
+    generated_variables = set()
+
+    for rule in rules:
+
+        component = str(rule[0]).lower().replace(" ", "_")
+        attribute = str(rule[1]).lower().replace(" ", "_")
+
+        generated_key = f"{component}_{attribute}"
+
+        generated_variables.add(generated_key)
+
+    required_variables = required_variables - generated_variables
+
+
+    # =====================================================
     # DEFAULT VALUES
     # =====================================================
     default_values = {
         "opening_height": 1200.0,
         "opening_width": 2100.0,
         "clearance": 20.0,
-        "extra_width": 60.0,
-        "extra_length": 60.0,
-        "allowance": 11.0,
+        "extra_width": 50.0,
+        "extra_length": 100.0,
+        "allowance": 0.0,
         "frame_horizontal_thickness": 50.0,
         "frame_vertical_thickness": 50.0,
-        "groove": 8.0,
-        "cut": 7.0,
-        "offset": 22.0
+        "groove": 0.0,
+        "cut": 0.0,
+        "offset": 0.0
     }
 
 
@@ -450,6 +467,17 @@ def show_component_calculator(conn, cur):
                         variables
                     )
 
+                    # =====================================
+                    # STORE GENERATED VALUE
+                    # =====================================
+                    generated_key = (
+                        f"{component}_{attribute}"
+                        .lower()
+                        .replace(" ", "_")
+                    )
+
+                    variables[generated_key] = float(value)
+
                 except Exception as e:
 
                     errors_found = True
@@ -465,6 +493,14 @@ def show_component_calculator(conn, cur):
             elif rule_type == "fixed":
 
                 value = quantity
+
+                generated_key = (
+                    f"{component}_{attribute}"
+                    .lower()
+                    .replace(" ", "_")
+                )
+
+                variables[generated_key] = float(value)
 
 
             # =============================================
