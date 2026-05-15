@@ -319,5 +319,3 @@ def show_component_calculator(conn, cur):
             use_container_width=True,
             hide_index=True
         )
-
-This is the correct architecture.
