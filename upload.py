@@ -52,10 +52,10 @@ def normalize_rule_type(value):
     if value in ["fomula", "formula", "formulas"]:
         return "formula"
 
-    if value in ["manual", "input"]:
+    if value in ["manual", "input", "user_input"]:
         return "manual"
 
-    if value in ["fixed", "constant"]:
+    if value in ["fixed", "constant", "qty"]:
         return "fixed"
 
     return value
@@ -83,7 +83,7 @@ def extract_formula_variables(formula):
     return sorted(set(v for v in variables if v not in ignore_words))
 
 
-# ================= DB INSERTS =================
+# ================= DATABASE INSERTS =================
 def insert_project(conn, cur, project_name):
     safe_execute(conn, cur, """
         INSERT INTO projects (project_name)
@@ -138,8 +138,7 @@ def insert_product(conn, cur, product_cat, product_code):
         )
         SELECT %s, %s
         WHERE NOT EXISTS (
-            SELECT 1
-            FROM products
+            SELECT 1 FROM products
             WHERE product_cat = %s
             AND product_code = %s
         )
@@ -175,8 +174,7 @@ def insert_component_rule(
         )
         SELECT %s, %s, %s, %s, %s, %s, %s
         WHERE NOT EXISTS (
-            SELECT 1
-            FROM product_component_rules
+            SELECT 1 FROM product_component_rules
             WHERE product_cat = %s
             AND product_code = %s
             AND component = %s
@@ -214,7 +212,7 @@ def insert_formula_variable(conn, cur, variable_name):
         ON CONFLICT (variable_name) DO NOTHING
     """, (
         variable_name,
-        "Auto-created from uploaded component formula"
+        "Auto-created from uploaded formula rule"
     ))
 
 
@@ -228,8 +226,7 @@ def insert_component_input(conn, cur, component, input_name, input_type):
         )
         SELECT %s, %s, %s
         WHERE NOT EXISTS (
-            SELECT 1
-            FROM component_inputs
+            SELECT 1 FROM component_inputs
             WHERE component = %s
             AND input_name = %s
             AND input_type = %s
@@ -244,7 +241,7 @@ def insert_component_input(conn, cur, component, input_name, input_type):
     ))
 
 
-# ================= READ EXCEL FILES =================
+# ================= READ COMPONENT ARCHITECTURE =================
 def read_component_architecture(uploaded_file):
     raw_df = pd.read_excel(uploaded_file, sheet_name=0, header=None)
 
@@ -315,6 +312,7 @@ def read_component_architecture(uploaded_file):
     return df
 
 
+# ================= READ PROJECT MASTER =================
 def read_project_master(uploaded_file):
     df = pd.read_excel(uploaded_file, sheet_name=0)
     df = normalize_columns(df)
@@ -363,10 +361,10 @@ def read_project_master(uploaded_file):
     return df
 
 
-# ================= UPLOAD PROCESSORS =================
+# ================= UPLOAD COMPONENT ARCHITECTURE =================
 def upload_component_architecture(conn, cur, df):
-    total_rules = 0
     total_products = set()
+    total_rules = 0
     total_variables = set()
     total_inputs = set()
 
@@ -431,6 +429,7 @@ def upload_component_architecture(conn, cur, df):
     }
 
 
+# ================= UPLOAD PROJECT MASTER =================
 def upload_project_master(conn, cur, df):
     total_projects = set()
     total_units = set()
@@ -469,22 +468,25 @@ def upload_project_master(conn, cur, df):
     }
 
 
-# ================= MAIN PAGE =================
+# ================= MAIN UPLOAD PAGE =================
 def show_upload(conn, cur):
-    st.title("Upload Master Data")
+    st.title("Master Database Upload")
 
     st.markdown("""
-    Upload the two master files in this order:
+    This page builds the master database required by the component calculation engine.
 
-    1. **Component Architecture**  
-       Saves products, component rules, formula variables, and component inputs.
+    **Master database contains:**
 
-    2. **Project Master**  
-       Saves projects, unit types, houses, and product codes.
+    - Products
+    - Components
+    - Formula rules
+    - Quantity rules
+    - Product mapping
+    - Project / Unit / House mapping
     """)
 
     upload_type = st.selectbox(
-        "Select Upload Type",
+        "Select Master Upload",
         [
             "Component Architecture",
             "Project Master"
@@ -493,14 +495,26 @@ def show_upload(conn, cur):
 
     if upload_type == "Component Architecture":
         st.info(
-            "Expected Excel format: Product_Cat, Product_Code, Components, "
-            "Attribute, Type, Formula_Used, Quanity"
+            "Upload component architecture Excel. "
+            "This saves products, components, formula rules, quantity rules, "
+            "formula variables, and component inputs."
         )
+
+        with st.expander("Expected Component Architecture Columns", expanded=True):
+            st.code(
+                "Product_Cat | Product_Code | Components | Attribute | Type | Formula_Used | Quanity"
+            )
+
     else:
         st.info(
-            "Expected Excel format: project_name, unit_name, house_no, "
-            "product_category, product_code, orientation, quantity"
+            "Upload project master Excel. "
+            "This saves project, unit type, house number, product category, and product code mapping."
         )
+
+        with st.expander("Expected Project Master Columns", expanded=True):
+            st.code(
+                "project_name | unit_name | house_no | product_category | product_code | orientation | quantity"
+            )
 
     uploaded_file = st.file_uploader(
         "Upload Excel File",
@@ -523,14 +537,14 @@ def show_upload(conn, cur):
     st.subheader("Preview")
     st.dataframe(df.head(100), use_container_width=True, hide_index=True)
 
-    if st.button("Upload to Database", type="primary"):
+    if st.button("Upload to Master Database", type="primary"):
         try:
             if upload_type == "Component Architecture":
                 result = upload_component_architecture(conn, cur, df)
             else:
                 result = upload_project_master(conn, cur, df)
 
-            st.success("Upload completed successfully.")
+            st.success("Master database updated successfully.")
 
             cols = st.columns(len(result))
 
