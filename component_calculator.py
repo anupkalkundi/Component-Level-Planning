@@ -229,7 +229,6 @@ def store_calculated_value(variables, component, attribute, value):
     for key in keys:
         variables[key] = numeric_value
 
-
 def ensure_generated_components_table(conn, cur):
     safe_execute(conn, cur, """
         CREATE TABLE IF NOT EXISTS generated_components (
@@ -251,6 +250,11 @@ def ensure_generated_components_table(conn, cur):
 
     safe_execute(conn, cur, """
         ALTER TABLE generated_components
+        ADD COLUMN IF NOT EXISTS attributes_json JSONB
+    """)
+
+    safe_execute(conn, cur, """
+        ALTER TABLE generated_components
         ADD COLUMN IF NOT EXISTS lh_quantity INTEGER DEFAULT 0
     """)
 
@@ -260,7 +264,6 @@ def ensure_generated_components_table(conn, cur):
     """)
 
     conn.commit()
-
 
 def show_component_calculator(conn, cur):
 
