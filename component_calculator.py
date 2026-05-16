@@ -768,12 +768,12 @@ def show_component_calculator(conn, cur):
                         row["product_code"],
                         row["orientation"],
                         row["component"],
+                        "combined",
                         Json(row["attributes"]),
                         row["quantity"],
                         row["lh_quantity"],
                         row["rh_quantity"],
-                    ))
-
+                   ))
                 execute_values(
                     cur,
                     """
