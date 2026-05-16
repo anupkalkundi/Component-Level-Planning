@@ -62,10 +62,7 @@ def show_tracking(conn, cur):
             ("Panel Saw", 3),
             ("Sanding", 4),
             ("CNC", 5),
-            ("Assembly", 6),
-            ("Polishing", 7),
-            ("QC", 8),
-            ("Dispatch", 9)
+            ("Sent To Pre-Assembly", 6),
         ]
 
         execute_values(
