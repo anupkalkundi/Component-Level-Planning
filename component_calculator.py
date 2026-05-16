@@ -15,17 +15,14 @@ VARIABLE_ALIASES = {
     "opening_w": "opening_width",
     "height_opening": "opening_length",
     "width_opening": "opening_width",
-
     "clearance": "vertical_clearance",
     "clr": "vertical_clearance",
     "v_clearance": "vertical_clearance",
     "h_clearance": "horizontal_clearance",
-
     "extra_l": "architrave_extra_length",
     "extra_length": "architrave_extra_length",
     "extra_w": "architrave_extra_width",
     "extra_width": "architrave_extra_width",
-
     "frame_h_thk": "frame_horizontal_thickness",
     "frame_v_thk": "frame_vertical_thickness",
 }
@@ -141,7 +138,6 @@ def evaluate_formula(formula, variables):
             {"__builtins__": {}},
             clean_vars
         )
-
         return Decimal(str(round(result, 2)))
 
     except NameError as e:
@@ -233,7 +229,6 @@ def ensure_generated_components_table(conn, cur):
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
-
     conn.commit()
 
 
@@ -243,12 +238,7 @@ def show_component_calculator(conn, cur):
 
     ensure_generated_components_table(conn, cur)
 
-    projects = get_distinct_values(
-        conn,
-        cur,
-        "projects",
-        "project_name"
-    )
+    projects = get_distinct_values(conn, cur, "projects", "project_name")
 
     if not projects:
         st.warning("No projects found. Upload project master first.")
@@ -303,10 +293,7 @@ def show_component_calculator(conn, cur):
         st.warning("No products found. Upload component architecture first.")
         return
 
-    product_options = [
-        f"{p[0]} | {p[1]}"
-        for p in products
-    ]
+    product_options = [f"{p[0]} | {p[1]}" for p in products]
 
     with col4:
         selected_product = st.selectbox("Product", product_options)
@@ -348,7 +335,6 @@ def show_component_calculator(conn, cur):
     for component, attribute, _, _, _ in rules:
         component_key = slug(component)
         attribute_key = slug(attribute)
-
         generated_variables.add(component_key)
         generated_variables.add(f"{component_key}_{attribute_key}")
 
@@ -479,27 +465,11 @@ def show_component_calculator(conn, cur):
                         component_qty * product_qty_multiplier
                     )
 
-                    value = None
-                    error = None
-
                     try:
                         if rule_type in ["formula", "fomula"]:
-                            value = evaluate_formula(
-                                formula,
-                                house_variables
-                            )
-
-                        elif rule_type == "fixed":
-                            value = fixed_value(
-                                formula,
-                                quantity
-                            )
-
+                            value = evaluate_formula(formula, house_variables)
                         else:
-                            value = fixed_value(
-                                formula,
-                                quantity
-                            )
+                            value = fixed_value(formula, quantity)
 
                         if value is None:
                             value = Decimal("0")
@@ -513,7 +483,7 @@ def show_component_calculator(conn, cur):
 
                         previous_qty[slug(component)] = component_qty
 
-                        preview_row = {
+                        calculated_rules.append({
                             "House Number": house_number,
                             "Product": product_code,
                             "Component": component,
@@ -523,9 +493,7 @@ def show_component_calculator(conn, cur):
                             "Value": value,
                             "Base Quantity": component_qty,
                             "Total Quantity": total_quantity,
-                        }
-
-                        calculated_rules.append(preview_row)
+                        })
 
                         tracking_key = (
                             house_number,
@@ -557,21 +525,15 @@ def show_component_calculator(conn, cur):
                         progressed = True
 
                     except FormulaError as e:
-                        error = str(e)
-
-                        if "Missing variable" in error:
+                        if "Missing variable" in str(e):
                             next_pending.append(rule)
                         else:
                             errors_found = True
-                            st.error(
-                                f"{house_number} - {component} / {attribute}: {e}"
-                            )
+                            st.error(f"{house_number} - {component} / {attribute}: {e}")
 
                     except Exception as e:
                         errors_found = True
-                        st.error(
-                            f"{house_number} - {component} / {attribute}: {e}"
-                        )
+                        st.error(f"{house_number} - {component} / {attribute}: {e}")
 
                 if not progressed:
                     for rule in next_pending:
@@ -599,9 +561,7 @@ def show_component_calculator(conn, cur):
                             "Total Quantity": int(component_qty * product_qty_multiplier),
                         })
 
-                        missing = ", ".join(
-                            extract_formula_variables(formula)
-                        )
+                        missing = ", ".join(extract_formula_variables(formula))
 
                         st.error(
                             f"{house_number} - {component} / {attribute}: Missing dependency. Required: {missing}"
@@ -623,9 +583,45 @@ def show_component_calculator(conn, cur):
 
         st.subheader("Generated Components")
 
-        df_preview = pd.DataFrame(
+        df_preview_raw = pd.DataFrame(
             st.session_state["generated_component_preview"]
         )
+
+        display_rows = []
+
+        group_cols = [
+            "House Number",
+            "Product",
+            "Component",
+            "Base Quantity",
+            "Total Quantity",
+        ]
+
+        for _, group_df in df_preview_raw.groupby(
+            group_cols,
+            dropna=False,
+            sort=False
+        ):
+            first_row = group_df.iloc[0].to_dict()
+            values = {}
+
+            for _, row in group_df.iterrows():
+                attr = str(row["Attribute"]).strip().title()
+                values[attr] = row["Value"]
+
+            display_rows.append({
+                "House Number": first_row["House Number"],
+                "Product": first_row["Product"],
+                "Component": first_row["Component"],
+                "Length": values.get("Length", ""),
+                "Width": values.get("Width", ""),
+                "Height": values.get("Height", ""),
+                "Value": first_row["Value"] if len(group_df) == 1 else "",
+                "Base Quantity": first_row["Base Quantity"],
+                "Total Quantity": first_row["Total Quantity"],
+            })
+
+        df_preview = pd.DataFrame(display_rows)
 
         st.dataframe(
             df_preview,
@@ -638,7 +634,7 @@ def show_component_calculator(conn, cur):
             False
         )
 
-        if errors_found or df_preview["Value"].isna().any():
+        if errors_found or df_preview_raw["Value"].isna().any():
             st.warning("Some components did not calculate. Fix formulas before confirming.")
         else:
             st.success("All component formulas calculated successfully")
@@ -647,7 +643,7 @@ def show_component_calculator(conn, cur):
 
         if st.button("Confirm Components and Send to Tracking", type="primary"):
 
-            if errors_found or df_preview["Value"].isna().any():
+            if errors_found or df_preview_raw["Value"].isna().any():
                 st.warning("Please fix formula errors before sending to tracking.")
                 return
 
