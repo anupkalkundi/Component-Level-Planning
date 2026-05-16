@@ -243,9 +243,22 @@ def ensure_generated_components_table(conn, cur):
             component TEXT,
             attributes_json JSONB,
             quantity INTEGER,
+            lh_quantity INTEGER DEFAULT 0,
+            rh_quantity INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
+
+    safe_execute(conn, cur, """
+        ALTER TABLE generated_components
+        ADD COLUMN IF NOT EXISTS lh_quantity INTEGER DEFAULT 0
+    """)
+
+    safe_execute(conn, cur, """
+        ALTER TABLE generated_components
+        ADD COLUMN IF NOT EXISTS rh_quantity INTEGER DEFAULT 0
+    """)
+
     conn.commit()
 
 
@@ -562,6 +575,8 @@ def show_component_calculator(conn, cur):
                                 "orientation": "",
                                 "component": component,
                                 "quantity": total_quantity,
+                                "lh_quantity": lh_quantity,
+                                "rh_quantity": rh_quantity,
                                 "attributes": {}
                             }
 
@@ -632,6 +647,10 @@ def show_component_calculator(conn, cur):
         st.session_state["generated_component_errors"] = errors_found
         st.session_state["generated_lh_quantity"] = lh_quantity
         st.session_state["generated_rh_quantity"] = rh_quantity
+        st.session_state["generated_shutter_thickness"] = variables.get(
+            "shutter_thickness",
+            ""
+        )
 
     if "generated_component_preview" in st.session_state:
 
@@ -669,13 +688,28 @@ def show_component_calculator(conn, cur):
                 attr = str(row["Attribute"]).strip().title()
                 values[attr] = row["Value"]
 
+            component_name = str(
+                first_row["Component"]
+            ).strip().lower()
+
+            thickness_value = values.get(
+                "Thickness",
+                values.get("Height", "")
+            )
+
+            if component_name == "flush shutter":
+                thickness_value = st.session_state.get(
+                    "generated_shutter_thickness",
+                    ""
+                )
+
             display_rows.append({
                 "House Number": first_row["House Number"],
                 "Product": first_row["Product"],
                 "Component": first_row["Component"],
                 "Length": values.get("Length", ""),
                 "Width": values.get("Width", ""),
-                "Thickness": values.get("Thickness", values.get("Height", "")),
+                "Thickness": thickness_value,
                 "Total Quantity": first_row["Total Quantity"],
             })
 
@@ -728,6 +762,8 @@ def show_component_calculator(conn, cur):
                         row["component"],
                         Json(row["attributes"]),
                         row["quantity"],
+                        row["lh_quantity"],
+                        row["rh_quantity"],
                     ))
 
                 execute_values(
@@ -743,7 +779,9 @@ def show_component_calculator(conn, cur):
                         orientation,
                         component,
                         attributes_json,
-                        quantity
+                        quantity,
+                        lh_quantity,
+                        rh_quantity
                     )
                     VALUES %s
                     """,
