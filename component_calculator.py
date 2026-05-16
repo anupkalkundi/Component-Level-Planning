@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 from decimal import Decimal
-from psycopg2.extras import execute_values
+from psycopg2.extras import execute_values, Json
 
 
 class FormulaError(Exception):
@@ -89,10 +89,10 @@ def get_distinct_values(conn, cur, table, column, where_sql="", params=None):
 
 
 def extract_formula_variables(formula):
+    formula = normalize_formula(formula)
+
     if not formula:
         return []
-
-    formula = normalize_formula(formula)
 
     ignore_words = {
         "abs",
@@ -106,7 +106,7 @@ def extract_formula_variables(formula):
 
     variables = re.findall(
         r"\b[A-Za-z_][A-Za-z0-9_]*\b",
-        str(formula)
+        formula
     )
 
     return sorted({
@@ -151,14 +151,10 @@ def evaluate_formula(formula, variables):
         raise FormulaError(str(e))
 
 
-def generated_variable_name(component, attribute=None):
-    parts = [str(component or "").strip()]
-
-    if attribute:
-        parts.append(str(attribute or "").strip())
-
+def slug(value):
     return (
-        "_".join(parts)
+        str(value or "")
+        .strip()
         .lower()
         .replace(" ", "_")
         .replace("-", "_")
@@ -175,57 +171,50 @@ def clean_number(value):
         return None
 
 
-def resolve_fixed_value(formula, quantity):
-    formula_value = clean_number(formula)
+def fixed_value(formula, quantity):
+    formula_num = clean_number(formula)
 
-    if formula_value is not None:
-        return Decimal(str(round(formula_value, 2)))
+    if formula_num is not None:
+        return Decimal(str(round(formula_num, 2)))
 
-    quantity_value = clean_number(quantity)
+    quantity_num = clean_number(quantity)
 
-    if quantity_value is not None:
-        return Decimal(str(round(quantity_value, 2)))
+    if quantity_num is not None:
+        return Decimal(str(round(quantity_num, 2)))
 
     return None
 
 
-def resolve_base_quantity(component, quantity, previous_component_qty):
-    component_name = str(component or "").strip().lower()
+def base_quantity(component, quantity, previous_qty):
+    component_key = slug(component)
 
-    if component_name == "flush shutter":
+    if component_key == "flush_shutter":
         return 1
 
     if quantity not in [None, ""]:
         return int(float(quantity))
 
-    return int(previous_component_qty.get(component_name, 1))
+    return int(previous_qty.get(component_key, 1))
 
 
-def component_priority(component):
-    name = str(component or "").strip()
+def store_calculated_value(variables, component, attribute, value):
+    if value is None:
+        return
 
-    priority_map = {
-        "Frame Vertical": 0.0,
-        "Frame Horizontal": 0.0,
-        "Door Frame Vertical": 0.0,
-        "Door Frame Horizontal": 0.0,
+    component_key = slug(component)
+    attribute_key = slug(attribute)
+    numeric_value = float(value)
 
-        "Door Frame Vertical Beading 1": 0.0,
-        "Door Frame Vertical Beading": 0.0,
-        "Door Frame Horizontal Beading": 0.0,
-        "Door Frame Horizontal Beading 1": 0.0,
-        "Door Frame Horizontal Beading 2": 0.0,
-
-        "Architrave Vertical": 0.0,
-        "Architrave Horizontal": 0.0,
-        "Architrave Vertical Front": 0.0,
-        "Architrave Horizontal Front": 0.0,
-
-        "Flush Shutter": 0.0,
-        "Louver": 0.0,
+    keys = {
+        component_key,
+        f"{component_key}_{attribute_key}",
     }
 
-    return priority_map.get(name, 999)
+    if attribute_key in ["length", "width", "height"]:
+        keys.add(f"{component_key}_{attribute_key}")
+
+    for key in keys:
+        variables[key] = numeric_value
 
 
 def ensure_generated_components_table(conn, cur):
@@ -342,15 +331,6 @@ def show_component_calculator(conn, cur):
         st.warning("No component rules found for selected product.")
         return
 
-    rules = sorted(
-        rules,
-        key=lambda x: (
-            component_priority(x[0]),
-            str(x[0]).strip(),
-            str(x[1]).strip()
-        )
-    )
-
     st.markdown("---")
     st.subheader("User Based Data")
 
@@ -365,17 +345,12 @@ def show_component_calculator(conn, cur):
 
     generated_variables = set()
 
-    for rule in rules:
-        component = rule[0]
-        attribute = rule[1]
+    for component, attribute, _, _, _ in rules:
+        component_key = slug(component)
+        attribute_key = slug(attribute)
 
-        generated_variables.add(
-            generated_variable_name(component, attribute)
-        )
-
-        generated_variables.add(
-            generated_variable_name(component)
-        )
+        generated_variables.add(component_key)
+        generated_variables.add(f"{component_key}_{attribute_key}")
 
     required_variables = required_variables - generated_variables
 
@@ -460,10 +435,6 @@ def show_component_calculator(conn, cur):
             st.warning("Please select at least one house number.")
             return
 
-        preview_rows = []
-        tracking_rows = []
-        errors_found = False
-
         product_qty_multiplier = int(
             float(variables.get("lh_quantity", 0))
             + float(variables.get("rh_quantity", 0))
@@ -473,51 +444,126 @@ def show_component_calculator(conn, cur):
             st.warning("Please enter LH Quantity or RH Quantity.")
             return
 
+        preview_rows = []
+        tracking_rows = []
+        errors_found = False
+
         for house_number in selected_houses:
 
             house_variables = variables.copy()
-            previous_component_qty = {}
+            pending_rules = list(rules)
+            calculated_rules = []
+            previous_qty = {}
             component_tracking_map = {}
 
-            for rule in rules:
+            while pending_rules:
+                progressed = False
+                next_pending = []
 
-                component = str(rule[0]).strip()
-                attribute = str(rule[1]).strip()
-                rule_type = str(rule[2] or "").strip().lower()
-                formula = rule[3]
-                raw_quantity = rule[4]
+                for rule in pending_rules:
+                    component = str(rule[0]).strip()
+                    attribute = str(rule[1]).strip()
+                    rule_type = str(rule[2] or "").strip().lower()
+                    formula = rule[3]
+                    quantity = rule[4]
 
-                base_quantity = resolve_base_quantity(
-                    component,
-                    raw_quantity,
-                    previous_component_qty
-                )
+                    component_qty = base_quantity(
+                        component,
+                        quantity,
+                        previous_qty
+                    )
 
-                total_quantity = int(base_quantity * product_qty_multiplier)
+                    total_quantity = int(
+                        component_qty * product_qty_multiplier
+                    )
 
-                previous_component_qty[
-                    component.lower()
-                ] = base_quantity
-
-                component_key = generated_variable_name(component)
-                attribute_key = generated_variable_name(component, attribute)
-
-                value = None
-
-                if rule_type in ["formula", "fomula"]:
+                    value = None
+                    error = None
 
                     try:
-                        value = evaluate_formula(
-                            formula,
-                            house_variables
+                        if rule_type in ["formula", "fomula"]:
+                            value = evaluate_formula(
+                                formula,
+                                house_variables
+                            )
+
+                        elif rule_type == "fixed":
+                            value = fixed_value(
+                                formula,
+                                quantity
+                            )
+
+                        else:
+                            value = fixed_value(
+                                formula,
+                                quantity
+                            )
+
+                        if value is None:
+                            value = Decimal("0")
+
+                        store_calculated_value(
+                            house_variables,
+                            component,
+                            attribute,
+                            value
                         )
 
-                        house_variables[attribute_key] = float(value)
+                        previous_qty[slug(component)] = component_qty
 
-                        if attribute.lower() in ["length", "width", "height"]:
-                            house_variables[f"{component_key}_{attribute.lower()}"] = float(value)
+                        preview_row = {
+                            "House Number": house_number,
+                            "Product": product_code,
+                            "Component": component,
+                            "Attribute": attribute,
+                            "Type": "formula" if rule_type == "fomula" else rule_type,
+                            "Formula": normalize_formula(formula),
+                            "Value": value,
+                            "Base Quantity": component_qty,
+                            "Total Quantity": total_quantity,
+                        }
 
-                        house_variables[component_key] = float(value)
+                        calculated_rules.append(preview_row)
+
+                        tracking_key = (
+                            house_number,
+                            product_cat,
+                            product_code,
+                            component
+                        )
+
+                        if tracking_key not in component_tracking_map:
+                            component_tracking_map[tracking_key] = {
+                                "project_name": project_name,
+                                "unit_type": unit_type,
+                                "house_number": house_number,
+                                "product_cat": product_cat,
+                                "product_code": product_code,
+                                "orientation": "",
+                                "component": component,
+                                "quantity": total_quantity,
+                                "attributes": {}
+                            }
+
+                        component_tracking_map[tracking_key]["attributes"][attribute] = {
+                            "type": "formula" if rule_type == "fomula" else rule_type,
+                            "formula": normalize_formula(formula),
+                            "value": float(value),
+                            "base_quantity": component_qty,
+                        }
+
+                        progressed = True
+
+                    except FormulaError as e:
+                        error = str(e)
+
+                        if "Missing variable" in error:
+                            next_pending.append(rule)
+                        else:
+                            errors_found = True
+                            st.error(
+                                f"{house_number} - {component} / {attribute}: {e}"
+                            )
 
                     except Exception as e:
                         errors_found = True
@@ -525,70 +571,51 @@ def show_component_calculator(conn, cur):
                             f"{house_number} - {component} / {attribute}: {e}"
                         )
 
-                elif rule_type == "fixed":
+                if not progressed:
+                    for rule in next_pending:
+                        component = str(rule[0]).strip()
+                        attribute = str(rule[1]).strip()
+                        formula = rule[3]
+                        quantity = rule[4]
+                        rule_type = str(rule[2] or "").strip().lower()
 
-                    value = resolve_fixed_value(
-                        formula,
-                        raw_quantity
-                    )
+                        component_qty = base_quantity(
+                            component,
+                            quantity,
+                            previous_qty
+                        )
 
-                    if value is not None:
-                        house_variables[attribute_key] = float(value)
-                        house_variables[component_key] = float(value)
+                        preview_rows.append({
+                            "House Number": house_number,
+                            "Product": product_code,
+                            "Component": component,
+                            "Attribute": attribute,
+                            "Type": "formula" if rule_type == "fomula" else rule_type,
+                            "Formula": normalize_formula(formula),
+                            "Value": None,
+                            "Base Quantity": component_qty,
+                            "Total Quantity": int(component_qty * product_qty_multiplier),
+                        })
 
-                else:
-                    value = resolve_fixed_value(
-                        formula,
-                        raw_quantity
-                    )
+                        missing = ", ".join(
+                            extract_formula_variables(formula)
+                        )
 
-                    if value is not None:
-                        house_variables[attribute_key] = float(value)
-                        house_variables[component_key] = float(value)
+                        st.error(
+                            f"{house_number} - {component} / {attribute}: Missing dependency. Required: {missing}"
+                        )
 
-                preview_rows.append({
-                    "House Number": house_number,
-                    "Product": product_code,
-                    "Component": component,
-                    "Attribute": attribute,
-                    "Type": "formula" if rule_type == "fomula" else rule_type,
-                    "Formula": normalize_formula(formula),
-                    "Value": value,
-                    "Base Quantity": base_quantity,
-                    "Total Quantity": total_quantity,
-                })
+                    errors_found = True
+                    break
 
-                tracking_key = (
-                    house_number,
-                    product_cat,
-                    product_code,
-                    component
-                )
+                pending_rules = next_pending
 
-                if tracking_key not in component_tracking_map:
-                    component_tracking_map[tracking_key] = {
-                        "project_name": project_name,
-                        "unit_type": unit_type,
-                        "house_number": house_number,
-                        "product_cat": product_cat,
-                        "product_code": product_code,
-                        "orientation": "",
-                        "component": component,
-                        "quantity": total_quantity,
-                        "attributes": {}
-                    }
-
-                component_tracking_map[tracking_key]["attributes"][attribute] = {
-                    "type": "formula" if rule_type == "fomula" else rule_type,
-                    "formula": normalize_formula(formula),
-                    "value": float(value) if value is not None else None,
-                    "base_quantity": base_quantity,
-                }
-
+            preview_rows.extend(calculated_rules)
             tracking_rows.extend(component_tracking_map.values())
 
         st.session_state["generated_component_preview"] = preview_rows
         st.session_state["generated_component_tracking_rows"] = tracking_rows
+        st.session_state["generated_component_errors"] = errors_found
 
     if "generated_component_preview" in st.session_state:
 
@@ -604,7 +631,12 @@ def show_component_calculator(conn, cur):
             hide_index=True
         )
 
-        if df_preview["Value"].isna().any():
+        errors_found = st.session_state.get(
+            "generated_component_errors",
+            False
+        )
+
+        if errors_found or df_preview["Value"].isna().any():
             st.warning("Some components did not calculate. Fix formulas before confirming.")
         else:
             st.success("All component formulas calculated successfully")
@@ -612,6 +644,10 @@ def show_component_calculator(conn, cur):
         st.markdown("---")
 
         if st.button("Confirm Components and Send to Tracking", type="primary"):
+
+            if errors_found or df_preview["Value"].isna().any():
+                st.warning("Please fix formula errors before sending to tracking.")
+                return
 
             tracking_rows = st.session_state.get(
                 "generated_component_tracking_rows",
@@ -634,7 +670,7 @@ def show_component_calculator(conn, cur):
                         row["product_code"],
                         row["orientation"],
                         row["component"],
-                        row["attributes"],
+                        Json(row["attributes"]),
                         row["quantity"],
                     ))
 
