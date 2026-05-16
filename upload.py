@@ -102,6 +102,72 @@ def show_upload(conn, cur):
             for v in variables
             if v.strip() not in ignore_words
         })
+def extract_formula_variables(formula):
+    formula = normalize_formula(formula)
+
+    if not formula:
+        return []
+
+    ignore_words = {
+        "abs",
+        "max",
+        "min",
+        "round",
+        "float",
+        "int",
+        "decimal",
+        "Decimal"
+    }
+
+    variables = re.findall(
+        r"\b[A-Za-z_][A-Za-z0-9_]*\b",
+        formula
+    )
+
+    return sorted({
+        v.strip()
+        for v in variables
+        if v.strip() not in ignore_words
+    })
+
+
+def component_sequence(component, attribute=""):
+    component = str(component or "").strip().lower()
+    attribute = str(attribute or "").strip().lower()
+
+    sequence_map = {
+        "frame vertical": 10,
+        "frame horizontal": 20,
+        "door frame vertical": 30,
+        "door frame horizontal": 40,
+        "door frame vertical beading": 50,
+        "door frame vertical beading 1": 60,
+        "door frame horizontal beading": 70,
+        "door frame horizontal beading 1": 80,
+        "door frame horizontal beading 2": 90,
+        "architrave vertical": 100,
+        "architrave horizontal": 110,
+        "architrave vertical front": 120,
+        "architrave horizontal front": 130,
+        "flush shutter": 140,
+        "louver": 150,
+    }
+
+    attribute_map = {
+        "length": 1,
+        "height": 2,
+        "width": 3,
+        "thickness": 4,
+    }
+
+    return (
+        sequence_map.get(component, 999),
+        attribute_map.get(attribute, 99),
+        component,
+        attribute,
+    )
+
+def insert_values_where_not_exists(
 
     def insert_values_where_not_exists(
         table,
