@@ -1,3 +1,6 @@
+Replace your full `component_calculator.py` with this updated version.
+
+```python
 import streamlit as st
 import pandas as pd
 import re
@@ -193,6 +196,24 @@ def base_quantity(component, quantity, previous_qty):
     return int(previous_qty.get(component_key, 1))
 
 
+def manual_dimension_key(component, attribute):
+    return f"manual_{slug(component)}_{slug(attribute)}"
+
+
+def needs_manual_dimension(rule):
+    component, attribute, rule_type, formula, _ = rule
+
+    attribute_key = slug(attribute)
+    rule_type = str(rule_type or "").strip().lower()
+    formula = normalize_formula(formula)
+
+    return (
+        attribute_key in ["width", "thickness"]
+        and rule_type not in ["formula", "fomula"]
+        and formula == ""
+    )
+
+
 def store_calculated_value(variables, component, attribute, value):
     if value is None:
         return
@@ -206,7 +227,7 @@ def store_calculated_value(variables, component, attribute, value):
         f"{component_key}_{attribute_key}",
     }
 
-    if attribute_key in ["length", "width", "height"]:
+    if attribute_key in ["length", "width", "height", "thickness"]:
         keys.add(f"{component_key}_{attribute_key}")
 
     for key in keys:
@@ -386,6 +407,28 @@ def show_component_calculator(conn, cur):
                 format="%.2f"
             )
 
+    manual_rules = [
+        rule
+        for rule in rules
+        if needs_manual_dimension(rule)
+    ]
+
+    if manual_rules:
+        st.markdown("#### Manual Component Dimensions")
+        manual_cols = st.columns(4)
+
+        for idx, rule in enumerate(manual_rules):
+            component, attribute, _, _, _ = rule
+            key = manual_dimension_key(component, attribute)
+
+            with manual_cols[idx % 4]:
+                variables[key] = st.number_input(
+                    f"{component} {attribute}".title(),
+                    value=0.0,
+                    step=1.0,
+                    format="%.2f"
+                )
+
     extra_variables = sorted(
         required_variables - {
             "opening_length",
@@ -423,10 +466,10 @@ def show_component_calculator(conn, cur):
             st.warning("Please select at least one house number.")
             return
 
-        product_qty_multiplier = int(
-            float(variables.get("lh_quantity", 0))
-            + float(variables.get("rh_quantity", 0))
-        )
+        lh_quantity = int(float(variables.get("lh_quantity", 0)))
+        rh_quantity = int(float(variables.get("rh_quantity", 0)))
+
+        product_qty_multiplier = lh_quantity + rh_quantity
 
         if product_qty_multiplier <= 0:
             st.warning("Please enter LH Quantity or RH Quantity.")
@@ -468,6 +511,16 @@ def show_component_calculator(conn, cur):
                     try:
                         if rule_type in ["formula", "fomula"]:
                             value = evaluate_formula(formula, house_variables)
+
+                        elif needs_manual_dimension(rule):
+                            value = Decimal(str(round(
+                                float(variables.get(
+                                    manual_dimension_key(component, attribute),
+                                    0.0
+                                )),
+                                2
+                            )))
+
                         else:
                             value = fixed_value(formula, quantity)
 
@@ -493,6 +546,8 @@ def show_component_calculator(conn, cur):
                             "Value": value,
                             "Base Quantity": component_qty,
                             "Total Quantity": total_quantity,
+                            "LH Quantity": lh_quantity,
+                            "RH Quantity": rh_quantity,
                         })
 
                         tracking_key = (
@@ -559,6 +614,8 @@ def show_component_calculator(conn, cur):
                             "Value": None,
                             "Base Quantity": component_qty,
                             "Total Quantity": int(component_qty * product_qty_multiplier),
+                            "LH Quantity": lh_quantity,
+                            "RH Quantity": rh_quantity,
                         })
 
                         missing = ", ".join(extract_formula_variables(formula))
@@ -593,8 +650,9 @@ def show_component_calculator(conn, cur):
             "House Number",
             "Product",
             "Component",
-            "Base Quantity",
             "Total Quantity",
+            "LH Quantity",
+            "RH Quantity",
         ]
 
         for _, group_df in df_preview_raw.groupby(
@@ -615,9 +673,9 @@ def show_component_calculator(conn, cur):
                 "Component": first_row["Component"],
                 "Length": values.get("Length", ""),
                 "Width": values.get("Width", ""),
-                "Height": values.get("Height", ""),
-                "Value": first_row["Value"] if len(group_df) == 1 else "",
-                "Base Quantity": first_row["Base Quantity"],
+                "Thickness": values.get("Thickness", values.get("Height", "")),
+                "LH": first_row["LH Quantity"],
+                "RH": first_row["RH Quantity"],
                 "Total Quantity": first_row["Total Quantity"],
             })
 
@@ -701,3 +759,6 @@ def show_component_calculator(conn, cur):
             except Exception as e:
                 conn.rollback()
                 st.error(f"Failed to send components to tracking: {e}")
+`House Number | Product | Component | LH | RH | Length | Width | Thickness | Total Quantity`
+
+No `Value` column and no `Base Quantity` column.
