@@ -229,46 +229,43 @@ def store_calculated_value(variables, component, attribute, value):
     for key in keys:
         variables[key] = numeric_value
 
+
 def ensure_generated_components_table(conn, cur):
     safe_execute(conn, cur, """
         CREATE TABLE IF NOT EXISTS generated_components (
-            id SERIAL PRIMARY KEY,
-            project_name TEXT,
-            unit_type TEXT,
-            house_number TEXT,
-            product_cat TEXT,
-            product_code TEXT,
+            id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            project_name TEXT NOT NULL,
+            unit_type TEXT NOT NULL,
+            house_number TEXT NOT NULL,
+            product_cat TEXT NOT NULL,
+            product_code TEXT NOT NULL,
+            component TEXT NOT NULL,
+            attribute TEXT NOT NULL,
+            calculated_value TEXT,
+            width NUMERIC,
+            thickness NUMERIC,
             orientation TEXT,
-            component TEXT,
-            attributes_json JSONB,
-            quantity INTEGER,
-            lh_quantity INTEGER DEFAULT 0,
-            rh_quantity INTEGER DEFAULT 0,
+            qty INTEGER,
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
 
     safe_execute(conn, cur, """
-        ALTER TABLE generated_components
-        ADD COLUMN IF NOT EXISTS attributes_json JSONB
-    """)
-
-    safe_execute(conn, cur, """
-        ALTER TABLE generated_components
-        ADD COLUMN IF NOT EXISTS quantity INTEGER
-    """)
-
-    safe_execute(conn, cur, """
-        ALTER TABLE generated_components
-        ADD COLUMN IF NOT EXISTS lh_quantity INTEGER DEFAULT 0
-    """)
-
-    safe_execute(conn, cur, """
-        ALTER TABLE generated_components
-        ADD COLUMN IF NOT EXISTS rh_quantity INTEGER DEFAULT 0
+        CREATE TABLE IF NOT EXISTS tracking (
+            id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            project_name TEXT NOT NULL,
+            house_number TEXT NOT NULL,
+            component TEXT NOT NULL,
+            required_qty INTEGER,
+            completed_qty INTEGER DEFAULT 0,
+            pending_qty INTEGER,
+            status TEXT,
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
     """)
 
     conn.commit()
+
 
 def show_component_calculator(conn, cur):
 
@@ -583,8 +580,6 @@ def show_component_calculator(conn, cur):
                                 "orientation": "",
                                 "component": component,
                                 "quantity": total_quantity,
-                                "lh_quantity": lh_quantity,
-                                "rh_quantity": rh_quantity,
                                 "attributes": {}
                             }
 
@@ -693,7 +688,7 @@ def show_component_calculator(conn, cur):
             values = {}
 
             for _, row in group_df.iterrows():
-                attr = str(row["Attribute"]).strip().title()
+                attr = str(row["Attribute"]).strip().lower()
                 values[attr] = row["Value"]
 
             component_name = str(
@@ -701,8 +696,8 @@ def show_component_calculator(conn, cur):
             ).strip().lower()
 
             thickness_value = values.get(
-                "Thickness",
-                values.get("Height", "")
+                "thickness",
+                values.get("height", "")
             )
 
             if component_name == "flush shutter":
@@ -715,8 +710,8 @@ def show_component_calculator(conn, cur):
                 "House Number": first_row["House Number"],
                 "Product": first_row["Product"],
                 "Component": first_row["Component"],
-                "Length": values.get("Length", ""),
-                "Width": values.get("Width", ""),
+                "Length": values.get("length", ""),
+                "Width": values.get("width", ""),
                 "Thickness": thickness_value,
                 "Total Quantity": first_row["Total Quantity"],
             })
@@ -757,23 +752,56 @@ def show_component_calculator(conn, cur):
                 return
 
             try:
-                insert_rows = []
+                generated_insert_rows = []
+                tracking_insert_rows = []
 
                 for row in tracking_rows:
-                    insert_rows.append((
+                    attrs = row["attributes"]
+
+                    length_value = ""
+                    width_value = None
+                    thickness_value = None
+
+                    if "length" in attrs:
+                        length_value = str(attrs["length"]["value"])
+
+                    if "width" in attrs:
+                        width_value = attrs["width"]["value"]
+
+                    if "thickness" in attrs:
+                        thickness_value = attrs["thickness"]["value"]
+
+                    if str(row["component"]).strip().lower() == "flush shutter":
+                        thickness_value = st.session_state.get(
+                            "generated_shutter_thickness",
+                            None
+                        )
+
+                    generated_insert_rows.append((
                         row["project_name"],
                         row["unit_type"],
                         row["house_number"],
                         row["product_cat"],
                         row["product_code"],
-                        row["orientation"],
                         row["component"],
                         "combined",
-                        Json(row["attributes"]),
+                        length_value,
+                        width_value,
+                        thickness_value,
+                        row["orientation"],
                         row["quantity"],
-                        row["lh_quantity"],
-                        row["rh_quantity"],
-                   ))
+                    ))
+
+                    tracking_insert_rows.append((
+                        row["project_name"],
+                        row["house_number"],
+                        row["component"],
+                        row["quantity"],
+                        0,
+                        row["quantity"],
+                        "Pending",
+                    ))
+
                 execute_values(
                     cur,
                     """
@@ -784,22 +812,41 @@ def show_component_calculator(conn, cur):
                         house_number,
                         product_cat,
                         product_code,
-                        orientation,
                         component,
-                        attributes_json,
-                        quantity,
-                        lh_quantity,
-                        rh_quantity
+                        attribute,
+                        calculated_value,
+                        width,
+                        thickness,
+                        orientation,
+                        qty
                     )
                     VALUES %s
                     """,
-                    insert_rows
+                    generated_insert_rows
+                )
+
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO tracking
+                    (
+                        project_name,
+                        house_number,
+                        component,
+                        required_qty,
+                        completed_qty,
+                        pending_qty,
+                        status
+                    )
+                    VALUES %s
+                    """,
+                    tracking_insert_rows
                 )
 
                 conn.commit()
 
                 st.success(
-                    f"{len(insert_rows)} component(s) sent to tracking successfully"
+                    f"{len(generated_insert_rows)} component(s) sent to tracking successfully"
                 )
 
             except Exception as e:
