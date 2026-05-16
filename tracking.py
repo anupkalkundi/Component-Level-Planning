@@ -64,7 +64,19 @@ def show_tracking(conn, cur):
             ("CNC", 5),
             ("Sent To Pre-Assembly", 6),
         ]
-
+        
+        cur.execute("""
+            DELETE FROM component_stages
+            WHERE stage_name NOT IN (
+                'Raw Wood Cutting',
+                'Hydraulic Composer',
+                'Panel Saw',
+                'Sanding',
+                'CNC',
+                'Sent To Pre-Assembly'
+            )
+        """)
+                
         execute_values(
             cur,
             """
