@@ -1,6 +1,3 @@
-Replace your full `component_calculator.py` with this updated version.
-
-```python
 import streamlit as st
 import pandas as pd
 import re
