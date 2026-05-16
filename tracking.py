@@ -287,7 +287,7 @@ def show_tracking(conn, cur):
                 COALESCE(orientation, '') AS orientation,
                 component,
                 attribute,
-                value,
+                calculated_value,
                 COALESCE(quantity, 1) AS quantity
             FROM generated_components
             WHERE 1=1
