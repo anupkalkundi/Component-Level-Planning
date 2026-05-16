@@ -56,8 +56,6 @@ def show_upload(conn, cur):
         if not value:
             return []
 
-        # Split only comma-separated product groups.
-        # Do not split D1-1.1+D1-1.7 because that is one product code.
         return [
             code.strip()
             for code in value.split(",")
@@ -70,16 +68,9 @@ def show_upload(conn, cur):
         if not formula:
             return ""
 
-        # If Excel has formula like:
-        # Grilll_shutter_vertical=shutter_length
-        # keep right side only.
         if "=" in formula:
             left, right = formula.split("=", 1)
-
-            if re.fullmatch(
-                r"\s*[A-Za-z_][A-Za-z0-9_]*\s*",
-                left
-            ):
+            if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_]*\s*", left):
                 formula = right.strip()
 
         return formula
@@ -122,7 +113,6 @@ def show_upload(conn, cur):
             return 0
 
         column_sql = ", ".join(columns)
-
         value_alias = ", ".join(columns)
 
         conflict_sql = " AND ".join([
@@ -142,12 +132,7 @@ def show_upload(conn, cur):
             )
         """
 
-        execute_values(
-            cur,
-            query,
-            rows
-        )
-
+        execute_values(cur, query, rows)
         return cur.rowcount
 
     # =========================================================
@@ -180,7 +165,7 @@ def show_upload(conn, cur):
 
         if header_row_index is None:
             raise Exception(
-                "Could not find header row with Product_Cat and Product_Code"
+                "Could not find Product_Cat and Product_Code header row"
             )
 
         df = pd.read_excel(
@@ -192,20 +177,14 @@ def show_upload(conn, cur):
 
         df = normalize_columns(df)
 
-        rename_map = {
-            "product_cat": "product_cat",
-            "product_code": "product_code",
+        df = df.rename(columns={
             "components": "component",
             "component": "component",
-            "attribute": "attribute",
-            "type": "type",
-            "formula_used": "formula_used",
             "formula": "formula_used",
+            "formula_used": "formula_used",
             "quanity": "quantity",
             "quantity": "quantity"
-        }
-
-        df = df.rename(columns=rename_map)
+        })
 
         required_cols = [
             "product_cat",
@@ -224,8 +203,6 @@ def show_upload(conn, cur):
 
         df = df[required_cols]
 
-        # Merged cells come as blank in pandas.
-        # Forward-fill master columns safely.
         df["product_cat"] = df["product_cat"].ffill()
         df["product_code"] = df["product_code"].ffill()
         df["component"] = df["component"].ffill()
@@ -248,9 +225,6 @@ def show_upload(conn, cur):
         df["formula_used"] = df["formula_used"].apply(normalize_formula)
         df["quantity"] = df["quantity"].apply(clean_int)
 
-        # Quantity merged cells:
-        # Example Flush Shutter length has 1, width blank.
-        # Fill quantity only inside same product + component group.
         df["quantity"] = (
             df.groupby(
                 [
@@ -270,11 +244,7 @@ def show_upload(conn, cur):
         expanded_rows = []
 
         for _, row in df.iterrows():
-            product_codes = split_product_codes(
-                row["product_code"]
-            )
-
-            for product_code in product_codes:
+            for product_code in split_product_codes(row["product_code"]):
                 expanded_rows.append({
                     "product_cat": row["product_cat"],
                     "product_code": product_code,
@@ -288,7 +258,7 @@ def show_upload(conn, cur):
         df = pd.DataFrame(expanded_rows)
 
         if df.empty:
-            raise Exception("No valid component rules found in Excel")
+            raise Exception("No valid component rules found")
 
         df = df.drop_duplicates(
             subset=[
@@ -317,20 +287,11 @@ def show_upload(conn, cur):
 
         df = normalize_columns(df)
 
-        rename_map = {
-            "project_name": "project_name",
+        df = df.rename(columns={
             "unit_name": "unit_type",
-            "unit_type": "unit_type",
             "house_no": "house_number",
-            "house_number": "house_number",
-            "product_category": "product_cat",
-            "product_cat": "product_cat",
-            "product_code": "product_code",
-            "orientation": "orientation",
-            "quantity": "quantity"
-        }
-
-        df = df.rename(columns=rename_map)
+            "product_category": "product_cat"
+        })
 
         required_cols = [
             "project_name",
@@ -365,10 +326,7 @@ def show_upload(conn, cur):
         df["orientation"] = df["orientation"].apply(clean_text)
 
         df["quantity"] = (
-            pd.to_numeric(
-                df["quantity"],
-                errors="coerce"
-            )
+            pd.to_numeric(df["quantity"], errors="coerce")
             .fillna(1)
             .astype(int)
         )
@@ -388,7 +346,7 @@ def show_upload(conn, cur):
         progress = st.progress(0)
         eta_box = st.empty()
 
-        status.info("⏳ Uploading component architecture... Please wait")
+        status.info("⏳ Uploading... Please wait")
 
         total_rows = len(df)
 
@@ -401,15 +359,9 @@ def show_upload(conn, cur):
 
         inserted_products = insert_values_where_not_exists(
             "products",
-            [
-                "product_cat",
-                "product_code"
-            ],
+            ["product_cat", "product_code"],
             product_rows,
-            [
-                "product_cat",
-                "product_code"
-            ]
+            ["product_cat", "product_code"]
         )
 
         conn.commit()
@@ -474,27 +426,16 @@ def show_upload(conn, cur):
 
         inserted_variables = insert_values_where_not_exists(
             "formula_variables",
-            [
-                "variable_name",
-                "description"
-            ],
+            ["variable_name", "description"],
             variable_rows,
-            [
-                "variable_name"
-            ]
+            ["variable_name"]
         )
 
         conn.commit()
         progress.progress(75)
 
         input_rows = (
-            df[
-                [
-                    "component",
-                    "attribute",
-                    "type"
-                ]
-            ]
+            df[["component", "attribute", "type"]]
             .drop_duplicates()
             .values
             .tolist()
@@ -502,46 +443,35 @@ def show_upload(conn, cur):
 
         inserted_inputs = insert_values_where_not_exists(
             "component_inputs",
-            [
-                "component",
-                "input_name",
-                "input_type"
-            ],
+            ["component", "input_name", "input_type"],
             input_rows,
-            [
-                "component",
-                "input_name",
-                "input_type"
-            ]
+            ["component", "input_name", "input_type"]
         )
 
         conn.commit()
         progress.progress(100)
 
         total_time = round(time.time() - start_time, 2)
-
         status.empty()
+
+        st.success(f"""
+🚀 Upload Completed Successfully
+
+⏱ Time: {total_time} sec
+📄 Excel Rows: {total_rows}
+
+📊 Summary:
+- Product Types: {len(product_rows)}
+- Newly Added Products: {inserted_products}
+- Component Rules Added: {inserted_rules}
+- Formula Variables Added: {inserted_variables}
+- Component Inputs Added: {inserted_inputs}
+""")
 
         eta_box.info(f"""
 ⚡ Speed:
 {round(total_rows / total_time, 2) if total_time > 0 else total_rows}
 rows/sec
-""")
-
-        st.success(f"""
-🚀 Component Architecture Upload Completed Successfully
-
-⏱ Time: {total_time} sec
-📄 Excel Rows Ready: {total_rows}
-
-📊 Summary:
-- Product Types Found: {len(product_rows)}
-- Newly Added Products: {inserted_products}
-- Newly Added Component Rules: {inserted_rules}
-- Newly Added Formula Variables: {inserted_variables}
-- Newly Added Component Inputs: {inserted_inputs}
-
-Existing matching records were preserved.
 """)
 
     # =========================================================
@@ -555,7 +485,7 @@ Existing matching records were preserved.
         progress = st.progress(0)
         eta_box = st.empty()
 
-        status.info("⏳ Uploading project master... Please wait")
+        status.info("⏳ Uploading... Please wait")
 
         total_rows = len(df)
 
@@ -576,12 +506,7 @@ Existing matching records were preserved.
         progress.progress(25)
 
         unit_rows = (
-            df[
-                [
-                    "project_name",
-                    "unit_type"
-                ]
-            ]
+            df[["project_name", "unit_type"]]
             .drop_duplicates()
             .values
             .tolist()
@@ -589,28 +514,16 @@ Existing matching records were preserved.
 
         inserted_units = insert_values_where_not_exists(
             "unit_types",
-            [
-                "project_name",
-                "unit_type"
-            ],
+            ["project_name", "unit_type"],
             unit_rows,
-            [
-                "project_name",
-                "unit_type"
-            ]
+            ["project_name", "unit_type"]
         )
 
         conn.commit()
         progress.progress(50)
 
         house_rows = (
-            df[
-                [
-                    "project_name",
-                    "unit_type",
-                    "house_number"
-                ]
-            ]
+            df[["project_name", "unit_type", "house_number"]]
             .drop_duplicates()
             .values
             .tolist()
@@ -618,29 +531,16 @@ Existing matching records were preserved.
 
         inserted_houses = insert_values_where_not_exists(
             "houses",
-            [
-                "project_name",
-                "unit_type",
-                "house_number"
-            ],
+            ["project_name", "unit_type", "house_number"],
             house_rows,
-            [
-                "project_name",
-                "unit_type",
-                "house_number"
-            ]
+            ["project_name", "unit_type", "house_number"]
         )
 
         conn.commit()
         progress.progress(75)
 
         product_rows = (
-            df[
-                [
-                    "product_cat",
-                    "product_code"
-                ]
-            ]
+            df[["product_cat", "product_code"]]
             .drop_duplicates()
         )
 
@@ -651,15 +551,9 @@ Existing matching records were preserved.
 
         inserted_products = insert_values_where_not_exists(
             "products",
-            [
-                "product_cat",
-                "product_code"
-            ],
+            ["product_cat", "product_code"],
             product_rows,
-            [
-                "product_cat",
-                "product_code"
-            ]
+            ["product_cat", "product_code"]
         )
 
         conn.commit()
@@ -668,14 +562,8 @@ Existing matching records were preserved.
         total_time = round(time.time() - start_time, 2)
         status.empty()
 
-        eta_box.info(f"""
-⚡ Speed:
-{round(total_rows / total_time, 2) if total_time > 0 else total_rows}
-rows/sec
-""")
-
         st.success(f"""
-🚀 Project Master Upload Completed Successfully
+🚀 Upload Completed Successfully
 
 ⏱ Time: {total_time} sec
 📄 Excel Rows: {total_rows}
@@ -685,8 +573,12 @@ rows/sec
 - Unit Types Added: {inserted_units}
 - Houses Added: {inserted_houses}
 - Products Added: {inserted_products}
+""")
 
-Existing matching records were preserved.
+        eta_box.info(f"""
+⚡ Speed:
+{round(total_rows / total_time, 2) if total_time > 0 else total_rows}
+rows/sec
 """)
 
     # =========================================================
@@ -700,26 +592,6 @@ Existing matching records were preserved.
             "Project Master"
         ]
     )
-
-    if upload_type == "Component Architecture":
-        st.info(
-            "Upload product component formulas and quantity rules."
-        )
-
-        with st.expander("Expected Columns", expanded=True):
-            st.code(
-                "Product_Cat | Product_Code | Components | Attribute | Type | Formula_Used | Quanity"
-            )
-
-    else:
-        st.info(
-            "Upload project, unit, house, and product mapping."
-        )
-
-        with st.expander("Expected Columns", expanded=True):
-            st.code(
-                "project_name | unit_name | house_no | product_category | product_code | orientation | quantity"
-            )
 
     file = st.file_uploader(
         "Upload Excel",
@@ -737,14 +609,9 @@ Existing matching records were preserved.
             st.error(f"❌ Excel read failed: {e}")
             st.stop()
 
-        st.subheader("Preview")
-        st.dataframe(
-            df.head(100),
-            use_container_width=True,
-            hide_index=True
-        )
+        total_rows = len(df)
 
-        st.info(f"📊 Rows ready to upload: {len(df)}")
+        st.info(f"📊 Estimated Rows: {total_rows}")
 
         if st.button("Upload to Master Database", type="primary"):
             try:
@@ -779,8 +646,9 @@ Existing matching records were preserved.
             key="quick_product_code"
         )
 
-    if st.button("➕ Add Product Instantly"):
+    add_product_btn = st.button("➕ Add Product Instantly")
 
+    if add_product_btn:
         product_cat = quick_product_cat.strip()
         product_code = quick_product_code.strip()
 
@@ -810,7 +678,6 @@ Existing matching records were preserved.
             ))
 
             inserted = cur.rowcount
-
             conn.commit()
 
             st.success(f"""
@@ -822,7 +689,7 @@ Product Category:
 Product Code:
 {product_code}
 
-Newly Added:
+Inserted:
 {inserted}
 
 Existing Preserved:
@@ -870,7 +737,9 @@ Existing Preserved:
                 key="rename_new_code"
             )
 
-        if st.button("✅ Update Product Code"):
+        rename_btn = st.button("✅ Update Product Code")
+
+        if rename_btn:
             if not old_products:
                 st.warning("Please select product codes")
             elif not new_code.strip():
@@ -996,14 +865,20 @@ Updated Formula Rules:
             key="add_formula_used"
         )
 
-        if st.button("➕ Add Formula Rule"):
-            product_cat, product_code = add_product_map[add_product_label]
+        add_formula_btn = st.button("➕ Add Formula Rule")
+
+        if add_formula_btn:
+            product_cat, product_code = add_product_map[
+                add_product_label
+            ]
 
             if not add_component.strip() or not add_attribute.strip():
                 st.warning("Component and attribute required")
             else:
                 try:
-                    formula_value = normalize_formula(add_formula_used)
+                    formula_value = normalize_formula(
+                        add_formula_used
+                    )
 
                     cur.execute("""
                         INSERT INTO product_component_rules
@@ -1047,7 +922,9 @@ Updated Formula Rules:
 
                     inserted_rule = cur.rowcount
 
-                    for variable in extract_formula_variables(formula_value):
+                    for variable in extract_formula_variables(
+                        formula_value
+                    ):
                         cur.execute("""
                             INSERT INTO formula_variables
                             (
@@ -1156,129 +1033,149 @@ Existing Preserved:
 
         rules = cur.fetchall()
 
-        rule_map = {}
+        if rules:
+            rule_map = {}
 
-        for index, rule in enumerate(rules):
-            label = (
-                f"{rule[2]} | {rule[3]} | {rule[4]} | "
-                f"{rule[5] or ''} | Qty: {rule[6]}"
+            for index, rule in enumerate(rules):
+                label = (
+                    f"{rule[2]} | {rule[3]} | {rule[4]} | "
+                    f"{rule[5] or ''} | Qty: {rule[6]}"
+                )
+
+                rule_map[label] = index
+
+            selected_rule_label = st.selectbox(
+                "Select Formula Rule",
+                list(rule_map.keys()),
+                key="edit_formula_rule"
             )
 
-            rule_map[label] = index
+            selected_rule = rules[
+                rule_map[selected_rule_label]
+            ]
 
-        selected_rule_label = st.selectbox(
-            "Select Formula Rule",
-            list(rule_map.keys()),
-            key="edit_formula_rule"
-        )
+            edit_col1, edit_col2, edit_col3 = st.columns(3)
 
-        selected_rule = rules[
-            rule_map[selected_rule_label]
-        ]
+            with edit_col1:
+                edit_component = st.text_input(
+                    "Component",
+                    value=selected_rule[2],
+                    key="edit_component"
+                )
 
-        edit_col1, edit_col2, edit_col3 = st.columns(3)
+            with edit_col2:
+                edit_attribute = st.text_input(
+                    "Attribute",
+                    value=selected_rule[3],
+                    key="edit_attribute"
+                )
 
-        with edit_col1:
-            edit_component = st.text_input(
-                "Component",
-                value=selected_rule[2],
-                key="edit_component"
+            with edit_col3:
+                normalized_type = normalize_rule_type(
+                    selected_rule[4]
+                )
+
+                if normalized_type not in [
+                    "formula",
+                    "fixed",
+                    "manual"
+                ]:
+                    normalized_type = "formula"
+
+                edit_type = st.selectbox(
+                    "Type",
+                    ["formula", "fixed", "manual"],
+                    index=[
+                        "formula",
+                        "fixed",
+                        "manual"
+                    ].index(normalized_type),
+                    key="edit_type"
+                )
+
+            edit_formula = st.text_input(
+                "Formula Used",
+                value=selected_rule[5] or "",
+                key="edit_formula"
             )
 
-        with edit_col2:
-            edit_attribute = st.text_input(
-                "Attribute",
-                value=selected_rule[3],
-                key="edit_attribute"
+            edit_quantity = st.number_input(
+                "Quantity",
+                min_value=0,
+                value=int(selected_rule[6] or 0),
+                step=1,
+                key="edit_quantity"
             )
 
-        with edit_col3:
-            edit_type = st.selectbox(
-                "Type",
-                ["formula", "fixed", "manual"],
-                index=["formula", "fixed", "manual"].index(
-                    normalize_rule_type(selected_rule[4])
-                    if normalize_rule_type(selected_rule[4]) in ["formula", "fixed", "manual"]
-                    else "formula"
-                ),
-                key="edit_type"
+            update_formula_btn = st.button(
+                "✅ Update Formula Rule"
             )
 
-        edit_formula = st.text_input(
-            "Formula Used",
-            value=selected_rule[5] or "",
-            key="edit_formula"
-        )
+            if update_formula_btn:
+                try:
+                    new_formula = normalize_formula(
+                        edit_formula
+                    )
 
-        edit_quantity = st.number_input(
-            "Quantity",
-            min_value=0,
-            value=int(selected_rule[6] or 0),
-            step=1,
-            key="edit_quantity"
-        )
-
-        if st.button("✅ Update Formula Rule"):
-            try:
-                new_formula = normalize_formula(edit_formula)
-
-                cur.execute("""
-                    UPDATE product_component_rules
-                    SET
-                        component = %s,
-                        attribute = %s,
-                        type = %s,
-                        formula_used = %s,
-                        quantity = %s
-                    WHERE product_cat = %s
-                    AND product_code = %s
-                    AND component = %s
-                    AND attribute = %s
-                    AND type = %s
-                    AND COALESCE(formula_used, '') = COALESCE(%s, '')
-                    AND COALESCE(quantity, -1) = COALESCE(%s, -1)
-                """, (
-                    edit_component.strip(),
-                    edit_attribute.strip(),
-                    edit_type,
-                    new_formula,
-                    int(edit_quantity),
-                    selected_rule[0],
-                    selected_rule[1],
-                    selected_rule[2],
-                    selected_rule[3],
-                    selected_rule[4],
-                    selected_rule[5],
-                    selected_rule[6]
-                ))
-
-                updated_rules = cur.rowcount
-
-                for variable in extract_formula_variables(new_formula):
                     cur.execute("""
-                        INSERT INTO formula_variables
-                        (
-                            variable_name,
-                            description
-                        )
-                        VALUES (%s, %s)
-                        ON CONFLICT (variable_name) DO NOTHING
+                        UPDATE product_component_rules
+                        SET
+                            component = %s,
+                            attribute = %s,
+                            type = %s,
+                            formula_used = %s,
+                            quantity = %s
+                        WHERE product_cat = %s
+                        AND product_code = %s
+                        AND component = %s
+                        AND attribute = %s
+                        AND type = %s
+                        AND COALESCE(formula_used, '') = COALESCE(%s, '')
+                        AND COALESCE(quantity, -1) = COALESCE(%s, -1)
                     """, (
-                        variable,
-                        "Auto-created from edited formula rule"
+                        edit_component.strip(),
+                        edit_attribute.strip(),
+                        edit_type,
+                        new_formula,
+                        int(edit_quantity),
+                        selected_rule[0],
+                        selected_rule[1],
+                        selected_rule[2],
+                        selected_rule[3],
+                        selected_rule[4],
+                        selected_rule[5],
+                        selected_rule[6]
                     ))
 
-                conn.commit()
+                    updated_rules = cur.rowcount
 
-                st.success(f"""
+                    for variable in extract_formula_variables(
+                        new_formula
+                    ):
+                        cur.execute("""
+                            INSERT INTO formula_variables
+                            (
+                                variable_name,
+                                description
+                            )
+                            VALUES (%s, %s)
+                            ON CONFLICT (variable_name) DO NOTHING
+                        """, (
+                            variable,
+                            "Auto-created from edited formula rule"
+                        ))
+
+                    conn.commit()
+
+                    st.success(f"""
 ✅ Formula Rule Updated Successfully
 
 Updated Rows:
 {updated_rules}
 """)
 
-                st.rerun()
+                    st.rerun()
 
-            except Exception as e:
-                conn.rollback()
-                st.error(f"Edit formula failed: {e}")
+                except Exception as e:
+                    conn.rollback()
+                    st.error(f"Edit formula failed: {e}")
