@@ -199,7 +199,6 @@ def manual_dimension_key(component, attribute):
 
 def needs_manual_dimension(rule):
     component, attribute, rule_type, formula, _ = rule
-
     attribute_key = slug(attribute)
     rule_type = str(rule_type or "").strip().lower()
     formula = normalize_formula(formula)
@@ -465,7 +464,6 @@ def show_component_calculator(conn, cur):
 
         lh_quantity = int(float(variables.get("lh_quantity", 0)))
         rh_quantity = int(float(variables.get("rh_quantity", 0)))
-
         product_qty_multiplier = lh_quantity + rh_quantity
 
         if product_qty_multiplier <= 0:
@@ -632,10 +630,19 @@ def show_component_calculator(conn, cur):
         st.session_state["generated_component_preview"] = preview_rows
         st.session_state["generated_component_tracking_rows"] = tracking_rows
         st.session_state["generated_component_errors"] = errors_found
+        st.session_state["generated_lh_quantity"] = lh_quantity
+        st.session_state["generated_rh_quantity"] = rh_quantity
 
     if "generated_component_preview" in st.session_state:
 
         st.subheader("Generated Components")
+
+        generated_lh = st.session_state.get("generated_lh_quantity", 0)
+        generated_rh = st.session_state.get("generated_rh_quantity", 0)
+
+        st.info(
+            f"LH Quantity: {generated_lh} | RH Quantity: {generated_rh}"
+        )
 
         df_preview_raw = pd.DataFrame(
             st.session_state["generated_component_preview"]
@@ -648,8 +655,6 @@ def show_component_calculator(conn, cur):
             "Product",
             "Component",
             "Total Quantity",
-            "LH Quantity",
-            "RH Quantity",
         ]
 
         for _, group_df in df_preview_raw.groupby(
@@ -671,8 +676,6 @@ def show_component_calculator(conn, cur):
                 "Length": values.get("Length", ""),
                 "Width": values.get("Width", ""),
                 "Thickness": values.get("Thickness", values.get("Height", "")),
-                "LH": first_row["LH Quantity"],
-                "RH": first_row["RH Quantity"],
                 "Total Quantity": first_row["Total Quantity"],
             })
 
