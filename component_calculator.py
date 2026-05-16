@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 from decimal import Decimal
+from psycopg2.extras import execute_values
 
 
 class FormulaError(Exception):
@@ -31,16 +32,14 @@ VARIABLE_ALIASES = {
 
 
 DEFAULT_VALUES = {
-    "opening_length": 2100.0,
-    "opening_width": 1200.0,
-
-    "vertical_clearance": 10.0,
-    "horizontal_clearance": 10.0,
-    "architrave_extra_length": 50.0,
-    "architrave_extra_width": 100.0,
-    "frame_horizontal_thickness": 50.0,
-    "frame_vertical_thickness": 50.0,
-
+    "opening_length": 0.0,
+    "opening_width": 0.0,
+    "vertical_clearance": 0.0,
+    "horizontal_clearance": 0.0,
+    "architrave_extra_length": 0.0,
+    "architrave_extra_width": 0.0,
+    "frame_horizontal_thickness": 0.0,
+    "frame_vertical_thickness": 0.0,
     "lh_quantity": 0.0,
     "rh_quantity": 0.0,
     "shutter_thickness": 0.0,
@@ -59,8 +58,6 @@ def normalize_variable(var_name):
 def normalize_formula(formula):
     formula = str(formula or "").strip()
 
-    # Some Excel rows are like: Grilll_shutter_vertical=shutter_length
-    # We only need the right side as the formula expression.
     if "=" in formula:
         left, right = formula.split("=", 1)
         if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_]*\s*", left):
@@ -97,7 +94,15 @@ def extract_formula_variables(formula):
 
     formula = normalize_formula(formula)
 
-    ignore_words = {"abs", "min", "max", "round", "float", "int", "Decimal"}
+    ignore_words = {
+        "abs",
+        "min",
+        "max",
+        "round",
+        "float",
+        "int",
+        "Decimal"
+    }
 
     variables = re.findall(
         r"\b[A-Za-z_][A-Za-z0-9_]*\b",
@@ -119,9 +124,9 @@ def evaluate_formula(formula, variables):
 
     clean_vars = {}
 
-    for k, v in variables.items():
-        if v not in [None, ""]:
-            clean_vars[normalize_variable(k)] = float(v)
+    for key, value in variables.items():
+        if value not in [None, ""]:
+            clean_vars[normalize_variable(key)] = float(value)
 
     clean_vars.update({
         "abs": abs,
@@ -136,6 +141,7 @@ def evaluate_formula(formula, variables):
             {"__builtins__": {}},
             clean_vars
         )
+
         return Decimal(str(round(result, 2)))
 
     except NameError as e:
@@ -159,23 +165,94 @@ def generated_variable_name(component, attribute=None):
     )
 
 
-def resolve_quantity(component, quantity, previous_component_qty):
+def clean_number(value):
+    if value in [None, ""]:
+        return None
+
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def resolve_fixed_value(formula, quantity):
+    formula_value = clean_number(formula)
+
+    if formula_value is not None:
+        return Decimal(str(round(formula_value, 2)))
+
+    quantity_value = clean_number(quantity)
+
+    if quantity_value is not None:
+        return Decimal(str(round(quantity_value, 2)))
+
+    return None
+
+
+def resolve_base_quantity(component, quantity, previous_component_qty):
     component_name = str(component or "").strip().lower()
 
-    # In your Excel, Flush Shutter quantity is merged.
-    # Length row has 1, width row becomes blank. Every door has 1 flush shutter.
     if component_name == "flush shutter":
         return 1
 
     if quantity not in [None, ""]:
-        return quantity
+        return int(float(quantity))
 
-    return previous_component_qty.get(component_name, 1)
+    return int(previous_component_qty.get(component_name, 1))
+
+
+def component_priority(component):
+    name = str(component or "").strip()
+
+    priority_map = {
+        "Frame Vertical": 0.0,
+        "Frame Horizontal": 0.0,
+        "Door Frame Vertical": 0.0,
+        "Door Frame Horizontal": 0.0,
+
+        "Door Frame Vertical Beading 1": 0.0,
+        "Door Frame Vertical Beading": 0.0,
+        "Door Frame Horizontal Beading": 0.0,
+        "Door Frame Horizontal Beading 1": 0.0,
+        "Door Frame Horizontal Beading 2": 0.0,
+
+        "Architrave Vertical": 0.0,
+        "Architrave Horizontal": 0.0,
+        "Architrave Vertical Front": 0.0,
+        "Architrave Horizontal Front": 0.0,
+
+        "Flush Shutter": 0.0,
+        "Louver": 0.0,
+    }
+
+    return priority_map.get(name, 999)
+
+
+def ensure_generated_components_table(conn, cur):
+    safe_execute(conn, cur, """
+        CREATE TABLE IF NOT EXISTS generated_components (
+            id SERIAL PRIMARY KEY,
+            project_name TEXT,
+            unit_type TEXT,
+            house_number TEXT,
+            product_cat TEXT,
+            product_code TEXT,
+            orientation TEXT,
+            component TEXT,
+            attributes_json JSONB,
+            quantity INTEGER,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+    conn.commit()
 
 
 def show_component_calculator(conn, cur):
 
     st.title("Component Calculator")
+
+    ensure_generated_components_table(conn, cur)
 
     projects = get_distinct_values(
         conn,
@@ -183,6 +260,10 @@ def show_component_calculator(conn, cur):
         "projects",
         "project_name"
     )
+
+    if not projects:
+        st.warning("No projects found. Upload project master first.")
+        return
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -197,6 +278,10 @@ def show_component_calculator(conn, cur):
         "WHERE project_name = %s",
         (project_name,)
     )
+
+    if not unit_types:
+        st.warning("No unit types found for selected project.")
+        return
 
     with col2:
         unit_type = st.selectbox("Unit Type", unit_types)
@@ -225,6 +310,10 @@ def show_component_calculator(conn, cur):
 
     products = cur.fetchall()
 
+    if not products:
+        st.warning("No products found. Upload component architecture first.")
+        return
+
     product_options = [
         f"{p[0]} | {p[1]}"
         for p in products
@@ -249,25 +338,15 @@ def show_component_calculator(conn, cur):
 
     rules = cur.fetchall()
 
-    priority_map = {
-        "Frame Vertical": 1,
-        "Frame Horizontal": 2,
-        "Door Frame Vertical": 3,
-        "Door Frame Horizontal": 4,
-        "Door Frame Vertical Beading": 5,
-        "Door Frame Horizontal Beading": 6,
-        "Architrave Vertical": 7,
-        "Architrave Horizontal": 8,
-        "Architrave Vertical Front": 9,
-        "Architrave Horizontal Front": 10,
-        "Flush Shutter": 11,
-        "Louver": 12,
-    }
+    if not rules:
+        st.warning("No component rules found for selected product.")
+        return
 
     rules = sorted(
         rules,
         key=lambda x: (
-            priority_map.get(str(x[0]).strip(), 99),
+            component_priority(x[0]),
+            str(x[0]).strip(),
             str(x[1]).strip()
         )
     )
@@ -294,8 +373,6 @@ def show_component_calculator(conn, cur):
             generated_variable_name(component, attribute)
         )
 
-        # Some formulas refer only to component name, for example:
-        # door_frame_vertical - shutter_thickness
         generated_variables.add(
             generated_variable_name(component)
         )
@@ -324,6 +401,7 @@ def show_component_calculator(conn, cur):
         )
 
     st.markdown("#### Component Inputs")
+
     input_fields = [
         ("vertical_clearance", "Vertical Clearance"),
         ("horizontal_clearance", "Horizontal Clearance"),
@@ -383,13 +461,23 @@ def show_component_calculator(conn, cur):
             return
 
         preview_rows = []
+        tracking_rows = []
         errors_found = False
-        previous_component_qty = {}
+
+        product_qty_multiplier = int(
+            float(variables.get("lh_quantity", 0))
+            + float(variables.get("rh_quantity", 0))
+        )
+
+        if product_qty_multiplier <= 0:
+            st.warning("Please enter LH Quantity or RH Quantity.")
+            return
 
         for house_number in selected_houses:
 
-            # Each house should calculate independently.
             house_variables = variables.copy()
+            previous_component_qty = {}
+            component_tracking_map = {}
 
             for rule in rules:
 
@@ -397,18 +485,22 @@ def show_component_calculator(conn, cur):
                 attribute = str(rule[1]).strip()
                 rule_type = str(rule[2] or "").strip().lower()
                 formula = rule[3]
-                quantity = resolve_quantity(
+                raw_quantity = rule[4]
+
+                base_quantity = resolve_base_quantity(
                     component,
-                    rule[4],
+                    raw_quantity,
                     previous_component_qty
                 )
 
-                component_key = generated_variable_name(component)
-                attribute_key = generated_variable_name(component, attribute)
+                total_quantity = int(base_quantity * product_qty_multiplier)
 
                 previous_component_qty[
                     component.lower()
-                ] = quantity
+                ] = base_quantity
+
+                component_key = generated_variable_name(component)
+                attribute_key = generated_variable_name(component, attribute)
 
                 value = None
 
@@ -422,35 +514,89 @@ def show_component_calculator(conn, cur):
 
                         house_variables[attribute_key] = float(value)
 
-                        # Store component-level value also.
-                        # This helps formulas like door_frame_vertical - shutter_thickness.
+                        if attribute.lower() in ["length", "width", "height"]:
+                            house_variables[f"{component_key}_{attribute.lower()}"] = float(value)
+
                         house_variables[component_key] = float(value)
 
                     except Exception as e:
                         errors_found = True
-                        st.error(f"{house_number} - {component} / {attribute}: {e}")
+                        st.error(
+                            f"{house_number} - {component} / {attribute}: {e}"
+                        )
 
                 elif rule_type == "fixed":
 
-                    value = quantity
+                    value = resolve_fixed_value(
+                        formula,
+                        raw_quantity
+                    )
 
-                    house_variables[attribute_key] = float(value)
-                    house_variables[component_key] = float(value)
+                    if value is not None:
+                        house_variables[attribute_key] = float(value)
+                        house_variables[component_key] = float(value)
+
+                else:
+                    value = resolve_fixed_value(
+                        formula,
+                        raw_quantity
+                    )
+
+                    if value is not None:
+                        house_variables[attribute_key] = float(value)
+                        house_variables[component_key] = float(value)
 
                 preview_rows.append({
                     "House Number": house_number,
                     "Product": product_code,
                     "Component": component,
                     "Attribute": attribute,
-                    "Type": rule_type,
+                    "Type": "formula" if rule_type == "fomula" else rule_type,
                     "Formula": normalize_formula(formula),
                     "Value": value,
-                    "Quantity": quantity,
+                    "Base Quantity": base_quantity,
+                    "Total Quantity": total_quantity,
                 })
+
+                tracking_key = (
+                    house_number,
+                    product_cat,
+                    product_code,
+                    component
+                )
+
+                if tracking_key not in component_tracking_map:
+                    component_tracking_map[tracking_key] = {
+                        "project_name": project_name,
+                        "unit_type": unit_type,
+                        "house_number": house_number,
+                        "product_cat": product_cat,
+                        "product_code": product_code,
+                        "orientation": "",
+                        "component": component,
+                        "quantity": total_quantity,
+                        "attributes": {}
+                    }
+
+                component_tracking_map[tracking_key]["attributes"][attribute] = {
+                    "type": "formula" if rule_type == "fomula" else rule_type,
+                    "formula": normalize_formula(formula),
+                    "value": float(value) if value is not None else None,
+                    "base_quantity": base_quantity,
+                }
+
+            tracking_rows.extend(component_tracking_map.values())
+
+        st.session_state["generated_component_preview"] = preview_rows
+        st.session_state["generated_component_tracking_rows"] = tracking_rows
+
+    if "generated_component_preview" in st.session_state:
 
         st.subheader("Generated Components")
 
-        df_preview = pd.DataFrame(preview_rows)
+        df_preview = pd.DataFrame(
+            st.session_state["generated_component_preview"]
+        )
 
         st.dataframe(
             df_preview,
@@ -458,5 +604,66 @@ def show_component_calculator(conn, cur):
             hide_index=True
         )
 
-        if not errors_found:
+        if df_preview["Value"].isna().any():
+            st.warning("Some components did not calculate. Fix formulas before confirming.")
+        else:
             st.success("All component formulas calculated successfully")
+
+        st.markdown("---")
+
+        if st.button("Confirm Components and Send to Tracking", type="primary"):
+
+            tracking_rows = st.session_state.get(
+                "generated_component_tracking_rows",
+                []
+            )
+
+            if not tracking_rows:
+                st.warning("No generated components to save.")
+                return
+
+            try:
+                insert_rows = []
+
+                for row in tracking_rows:
+                    insert_rows.append((
+                        row["project_name"],
+                        row["unit_type"],
+                        row["house_number"],
+                        row["product_cat"],
+                        row["product_code"],
+                        row["orientation"],
+                        row["component"],
+                        row["attributes"],
+                        row["quantity"],
+                    ))
+
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO generated_components
+                    (
+                        project_name,
+                        unit_type,
+                        house_number,
+                        product_cat,
+                        product_code,
+                        orientation,
+                        component,
+                        attributes_json,
+                        quantity
+                    )
+                    VALUES %s
+                    """,
+                    insert_rows
+                )
+
+                conn.commit()
+
+                st.success(
+                    f"{len(insert_rows)} component(s) sent to tracking successfully"
+                )
+
+            except Exception as e:
+                conn.rollback()
+                st.error(f"Failed to send components to tracking: {e}")
