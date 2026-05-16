@@ -11,10 +11,6 @@ def show_upload(conn, cur):
 
     st.title("📤 Upload Component Master Data")
 
-    # =========================================================
-    # HELPERS
-    # =========================================================
-
     def clean_text(value):
         if pd.isna(value):
             return ""
@@ -53,6 +49,7 @@ def show_upload(conn, cur):
 
     def split_product_codes(value):
         value = clean_text(value)
+
         if not value:
             return []
 
@@ -70,7 +67,11 @@ def show_upload(conn, cur):
 
         if "=" in formula:
             left, right = formula.split("=", 1)
-            if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_]*\s*", left):
+
+            if re.fullmatch(
+                r"\s*[A-Za-z_][A-Za-z0-9_]*\s*",
+                left
+            ):
                 formula = right.strip()
 
         return formula
@@ -102,72 +103,73 @@ def show_upload(conn, cur):
             for v in variables
             if v.strip() not in ignore_words
         })
-def extract_formula_variables(formula):
-    formula = normalize_formula(formula)
 
-    if not formula:
-        return []
+    def component_sequence(component, attribute=""):
+        component = str(component or "").strip().lower()
+        attribute = str(attribute or "").strip().lower()
 
-    ignore_words = {
-        "abs",
-        "max",
-        "min",
-        "round",
-        "float",
-        "int",
-        "decimal",
-        "Decimal"
-    }
+        sequence_map = {
+            "frame vertical": 10,
+            "frame horizontal": 20,
+            "door frame vertical": 30,
+            "door frame horizontal": 40,
+            "door frame vertical beading": 50,
+            "door frame vertical beading 1": 60,
+            "door frame horizontal beading": 70,
+            "door frame horizontal beading 1": 80,
+            "door frame horizontal beading 2": 90,
+            "architrave vertical": 100,
+            "architrave horizontal": 110,
+            "architrave vertical front": 120,
+            "architrave horizontal front": 130,
+            "flush shutter": 140,
+            "louver": 150,
+        }
 
-    variables = re.findall(
-        r"\b[A-Za-z_][A-Za-z0-9_]*\b",
-        formula
-    )
+        attribute_map = {
+            "length": 1,
+            "height": 2,
+            "width": 3,
+            "thickness": 4,
+        }
 
-    return sorted({
-        v.strip()
-        for v in variables
-        if v.strip() not in ignore_words
-    })
+        return (
+            sequence_map.get(component, 999),
+            attribute_map.get(attribute, 99),
+            component,
+            attribute,
+        )
 
-
-def component_sequence(component, attribute=""):
-    component = str(component or "").strip().lower()
-    attribute = str(attribute or "").strip().lower()
-
-    sequence_map = {
-        "frame vertical": 10,
-        "frame horizontal": 20,
-        "door frame vertical": 30,
-        "door frame horizontal": 40,
-        "door frame vertical beading": 50,
-        "door frame vertical beading 1": 60,
-        "door frame horizontal beading": 70,
-        "door frame horizontal beading 1": 80,
-        "door frame horizontal beading 2": 90,
-        "architrave vertical": 100,
-        "architrave horizontal": 110,
-        "architrave vertical front": 120,
-        "architrave horizontal front": 130,
-        "flush shutter": 140,
-        "louver": 150,
-    }
-
-    attribute_map = {
-        "length": 1,
-        "height": 2,
-        "width": 3,
-        "thickness": 4,
-    }
-
-    return (
-        sequence_map.get(component, 999),
-        attribute_map.get(attribute, 99),
-        component,
-        attribute,
-    )
-
-def insert_values_where_not_exists(
+    def sql_component_order():
+        return """
+            CASE LOWER(TRIM(component))
+                WHEN 'frame vertical' THEN 10
+                WHEN 'frame horizontal' THEN 20
+                WHEN 'door frame vertical' THEN 30
+                WHEN 'door frame horizontal' THEN 40
+                WHEN 'door frame vertical beading' THEN 50
+                WHEN 'door frame vertical beading 1' THEN 60
+                WHEN 'door frame horizontal beading' THEN 70
+                WHEN 'door frame horizontal beading 1' THEN 80
+                WHEN 'door frame horizontal beading 2' THEN 90
+                WHEN 'architrave vertical' THEN 100
+                WHEN 'architrave horizontal' THEN 110
+                WHEN 'architrave vertical front' THEN 120
+                WHEN 'architrave horizontal front' THEN 130
+                WHEN 'flush shutter' THEN 140
+                WHEN 'louver' THEN 150
+                ELSE 999
+            END,
+            CASE LOWER(TRIM(attribute))
+                WHEN 'length' THEN 1
+                WHEN 'height' THEN 2
+                WHEN 'width' THEN 3
+                WHEN 'thickness' THEN 4
+                ELSE 99
+            END,
+            component,
+            attribute
+        """
 
     def insert_values_where_not_exists(
         table,
@@ -200,10 +202,6 @@ def insert_values_where_not_exists(
 
         execute_values(cur, query, rows)
         return cur.rowcount
-
-    # =========================================================
-    # READ COMPONENT ARCHITECTURE
-    # =========================================================
 
     def read_component_architecture(file):
         raw_df = pd.read_excel(
@@ -249,6 +247,7 @@ def insert_values_where_not_exists(
             "formula": "formula_used",
             "formula_used": "formula_used",
             "quanity": "quantity",
+            "qty": "quantity",
             "quantity": "quantity"
         })
 
@@ -262,12 +261,19 @@ def insert_values_where_not_exists(
             "quantity"
         ]
 
-        for col in required_cols:
-            if col not in df.columns:
-                st.error(f"Missing column: {col}")
-                st.stop()
+        missing_cols = [
+            col
+            for col in required_cols
+            if col not in df.columns
+        ]
+
+        if missing_cols:
+            raise Exception(
+                "Missing column: " + ", ".join(missing_cols)
+            )
 
         df = df[required_cols]
+        df["_row_order"] = range(len(df))
 
         df["product_cat"] = df["product_cat"].ffill()
         df["product_code"] = df["product_code"].ffill()
@@ -291,13 +297,23 @@ def insert_values_where_not_exists(
         df["formula_used"] = df["formula_used"].apply(normalize_formula)
         df["quantity"] = df["quantity"].apply(clean_int)
 
+        df = df[
+            (df["product_cat"] != "")
+            & (df["product_code"] != "")
+            & (df["component"] != "")
+            & (df["attribute"] != "")
+            & (df["type"] != "")
+        ]
+
         df["quantity"] = (
-            df.groupby(
+            df.sort_values("_row_order")
+            .groupby(
                 [
                     "product_cat",
                     "product_code",
                     "component"
-                ]
+                ],
+                sort=False
             )["quantity"]
             .ffill()
         )
@@ -309,7 +325,8 @@ def insert_values_where_not_exists(
 
         expanded_rows = []
 
-        for _, row in df.iterrows():
+        for _, row in df.sort_values("_row_order").iterrows():
+
             for product_code in split_product_codes(row["product_code"]):
                 expanded_rows.append({
                     "product_cat": row["product_cat"],
@@ -335,14 +352,27 @@ def insert_values_where_not_exists(
                 "type",
                 "formula_used",
                 "quantity"
-            ]
+            ],
+            keep="first"
         )
 
-        return df
+        df["_sequence"] = df.apply(
+            lambda row: component_sequence(
+                row["component"],
+                row["attribute"]
+            ),
+            axis=1
+        )
 
-    # =========================================================
-    # READ PROJECT MASTER
-    # =========================================================
+        df = df.sort_values(
+            by=[
+                "product_cat",
+                "product_code",
+                "_sequence"
+            ]
+        ).drop(columns=["_sequence"])
+
+        return df
 
     def read_project_master(file):
         df = pd.read_excel(
@@ -369,10 +399,16 @@ def insert_values_where_not_exists(
             "quantity"
         ]
 
-        for col in required_cols:
-            if col not in df.columns:
-                st.error(f"Missing column: {col}")
-                st.stop()
+        missing_cols = [
+            col
+            for col in required_cols
+            if col not in df.columns
+        ]
+
+        if missing_cols:
+            raise Exception(
+                "Missing column: " + ", ".join(missing_cols)
+            )
 
         df = df[required_cols]
 
@@ -392,25 +428,22 @@ def insert_values_where_not_exists(
         df["orientation"] = df["orientation"].apply(clean_text)
 
         df["quantity"] = (
-            pd.to_numeric(df["quantity"], errors="coerce")
+            pd.to_numeric(
+                df["quantity"],
+                errors="coerce"
+            )
             .fillna(1)
             .astype(int)
         )
 
-        df = df.drop_duplicates()
-
-        return df
-
-    # =========================================================
-    # UPLOAD COMPONENT ARCHITECTURE
-    # =========================================================
+        return df.drop_duplicates()
 
     def upload_component_architecture(df):
         start_time = time.time()
 
         status = st.empty()
         progress = st.progress(0)
-        eta_box = st.empty()
+        speed_box = st.empty()
 
         status.info("⏳ Uploading... Please wait")
 
@@ -518,6 +551,12 @@ def insert_values_where_not_exists(
         progress.progress(100)
 
         total_time = round(time.time() - start_time, 2)
+        speed = (
+            round(total_rows / total_time, 2)
+            if total_time > 0
+            else total_rows
+        )
+
         status.empty()
 
         st.success(f"""
@@ -534,22 +573,17 @@ def insert_values_where_not_exists(
 - Component Inputs Added: {inserted_inputs}
 """)
 
-        eta_box.info(f"""
+        speed_box.info(f"""
 ⚡ Speed:
-{round(total_rows / total_time, 2) if total_time > 0 else total_rows}
-rows/sec
+{speed} rows/sec
 """)
-
-    # =========================================================
-    # UPLOAD PROJECT MASTER
-    # =========================================================
 
     def upload_project_master(df):
         start_time = time.time()
 
         status = st.empty()
         progress = st.progress(0)
-        eta_box = st.empty()
+        speed_box = st.empty()
 
         status.info("⏳ Uploading... Please wait")
 
@@ -605,14 +639,14 @@ rows/sec
         conn.commit()
         progress.progress(75)
 
-        product_rows = (
+        product_rows_df = (
             df[["product_cat", "product_code"]]
             .drop_duplicates()
         )
 
-        product_rows = product_rows[
-            (product_rows["product_cat"] != "")
-            & (product_rows["product_code"] != "")
+        product_rows = product_rows_df[
+            (product_rows_df["product_cat"] != "")
+            & (product_rows_df["product_code"] != "")
         ].values.tolist()
 
         inserted_products = insert_values_where_not_exists(
@@ -626,6 +660,12 @@ rows/sec
         progress.progress(100)
 
         total_time = round(time.time() - start_time, 2)
+        speed = (
+            round(total_rows / total_time, 2)
+            if total_time > 0
+            else total_rows
+        )
+
         status.empty()
 
         st.success(f"""
@@ -641,15 +681,10 @@ rows/sec
 - Products Added: {inserted_products}
 """)
 
-        eta_box.info(f"""
+        speed_box.info(f"""
 ⚡ Speed:
-{round(total_rows / total_time, 2) if total_time > 0 else total_rows}
-rows/sec
+{speed} rows/sec
 """)
-
-    # =========================================================
-    # UPLOAD UI
-    # =========================================================
 
     upload_type = st.selectbox(
         "Select Upload Type",
@@ -675,9 +710,7 @@ rows/sec
             st.error(f"❌ Excel read failed: {e}")
             st.stop()
 
-        total_rows = len(df)
-
-        st.info(f"📊 Estimated Rows: {total_rows}")
+        st.info(f"📊 Estimated Rows: {len(df)}")
 
         if st.button("Upload to Master Database", type="primary"):
             try:
@@ -691,10 +724,6 @@ rows/sec
                 st.error(f"❌ Upload failed: {e}")
 
     st.divider()
-
-    # =========================================================
-    # ADD EXTRA PRODUCT
-    # =========================================================
 
     st.subheader("➕ Add Extra Product")
 
@@ -712,9 +741,7 @@ rows/sec
             key="quick_product_code"
         )
 
-    add_product_btn = st.button("➕ Add Product Instantly")
-
-    if add_product_btn:
+    if st.button("➕ Add Product Instantly"):
         product_cat = quick_product_cat.strip()
         product_code = quick_product_code.strip()
 
@@ -768,10 +795,6 @@ Existing Preserved:
 
     st.divider()
 
-    # =========================================================
-    # RENAME PRODUCT CODE
-    # =========================================================
-
     st.subheader("✏ Rename / Correct Product Code")
 
     cur.execute("""
@@ -803,9 +826,7 @@ Existing Preserved:
                 key="rename_new_code"
             )
 
-        rename_btn = st.button("✅ Update Product Code")
-
-        if rename_btn:
+        if st.button("✅ Update Product Code"):
             if not old_products:
                 st.warning("Please select product codes")
             elif not new_code.strip():
@@ -867,10 +888,6 @@ Updated Formula Rules:
 
     st.divider()
 
-    # =========================================================
-    # ADD FORMULA
-    # =========================================================
-
     st.subheader("➕ Add Formula / Component Rule")
 
     cur.execute("""
@@ -931,9 +948,7 @@ Updated Formula Rules:
             key="add_formula_used"
         )
 
-        add_formula_btn = st.button("➕ Add Formula Rule")
-
-        if add_formula_btn:
+        if st.button("➕ Add Formula Rule"):
             product_cat, product_code = add_product_map[
                 add_product_label
             ]
@@ -1049,10 +1064,6 @@ Existing Preserved:
 
     st.divider()
 
-    # =========================================================
-    # EDIT FORMULA
-    # =========================================================
-
     st.subheader("✏ Edit Formula / Component Rule")
 
     cur.execute("""
@@ -1079,10 +1090,9 @@ Existing Preserved:
             edit_product_label
         ]
 
-        cur.execute("""
+        cur.execute(f"""
             SELECT
-                product_cat,
-                product_code,
+                ctid::text,
                 component,
                 attribute,
                 type,
@@ -1091,7 +1101,7 @@ Existing Preserved:
             FROM product_component_rules
             WHERE product_cat = %s
             AND product_code = %s
-            ORDER BY component, attribute
+            ORDER BY {sql_component_order()}
         """, (
             edit_product_cat,
             edit_product_code
@@ -1104,8 +1114,8 @@ Existing Preserved:
 
             for index, rule in enumerate(rules):
                 label = (
-                    f"{rule[2]} | {rule[3]} | {rule[4]} | "
-                    f"{rule[5] or ''} | Qty: {rule[6]}"
+                    f"{rule[1]} | {rule[2]} | {rule[3]} | "
+                    f"{rule[4] or ''} | Qty: {rule[5]}"
                 )
 
                 rule_map[label] = index
@@ -1120,25 +1130,27 @@ Existing Preserved:
                 rule_map[selected_rule_label]
             ]
 
+            selected_ctid = selected_rule[0]
+
             edit_col1, edit_col2, edit_col3 = st.columns(3)
 
             with edit_col1:
                 edit_component = st.text_input(
                     "Component",
-                    value=selected_rule[2],
-                    key="edit_component"
+                    value=selected_rule[1],
+                    key=f"edit_component_{selected_ctid}"
                 )
 
             with edit_col2:
                 edit_attribute = st.text_input(
                     "Attribute",
-                    value=selected_rule[3],
-                    key="edit_attribute"
+                    value=selected_rule[2],
+                    key=f"edit_attribute_{selected_ctid}"
                 )
 
             with edit_col3:
                 normalized_type = normalize_rule_type(
-                    selected_rule[4]
+                    selected_rule[3]
                 )
 
                 if normalized_type not in [
@@ -1156,28 +1168,24 @@ Existing Preserved:
                         "fixed",
                         "manual"
                     ].index(normalized_type),
-                    key="edit_type"
+                    key=f"edit_type_{selected_ctid}"
                 )
 
             edit_formula = st.text_input(
                 "Formula Used",
-                value=selected_rule[5] or "",
-                key="edit_formula"
+                value=selected_rule[4] or "",
+                key=f"edit_formula_{selected_ctid}"
             )
 
             edit_quantity = st.number_input(
                 "Quantity",
                 min_value=0,
-                value=int(selected_rule[6] or 0),
+                value=int(selected_rule[5] or 0),
                 step=1,
-                key="edit_quantity"
+                key=f"edit_quantity_{selected_ctid}"
             )
 
-            update_formula_btn = st.button(
-                "✅ Update Formula Rule"
-            )
-
-            if update_formula_btn:
+            if st.button("✅ Update Formula Rule"):
                 try:
                     new_formula = normalize_formula(
                         edit_formula
@@ -1191,26 +1199,14 @@ Existing Preserved:
                             type = %s,
                             formula_used = %s,
                             quantity = %s
-                        WHERE product_cat = %s
-                        AND product_code = %s
-                        AND component = %s
-                        AND attribute = %s
-                        AND type = %s
-                        AND COALESCE(formula_used, '') = COALESCE(%s, '')
-                        AND COALESCE(quantity, -1) = COALESCE(%s, -1)
+                        WHERE ctid = %s::tid
                     """, (
                         edit_component.strip(),
                         edit_attribute.strip(),
                         edit_type,
                         new_formula,
                         int(edit_quantity),
-                        selected_rule[0],
-                        selected_rule[1],
-                        selected_rule[2],
-                        selected_rule[3],
-                        selected_rule[4],
-                        selected_rule[5],
-                        selected_rule[6]
+                        selected_ctid
                     ))
 
                     updated_rules = cur.rowcount
@@ -1230,6 +1226,30 @@ Existing Preserved:
                             variable,
                             "Auto-created from edited formula rule"
                         ))
+
+                    cur.execute("""
+                        INSERT INTO component_inputs
+                        (
+                            component,
+                            input_name,
+                            input_type
+                        )
+                        SELECT %s, %s, %s
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM component_inputs
+                            WHERE component = %s
+                            AND input_name = %s
+                            AND input_type = %s
+                        )
+                    """, (
+                        edit_component.strip(),
+                        edit_attribute.strip(),
+                        edit_type,
+                        edit_component.strip(),
+                        edit_attribute.strip(),
+                        edit_type
+                    ))
 
                     conn.commit()
 
