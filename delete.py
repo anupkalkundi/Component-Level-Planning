@@ -1,6 +1,3 @@
-Use this updated `delete.py`. It has **multiple delete selection** for Project, Unit Type, House, Product, and Formula.
-
-```python
 def show_delete(conn, cur):
     import streamlit as st
 
@@ -557,4 +554,3 @@ Formula rules deleted: {deleted_rules}
             except Exception as e:
                 conn.rollback()
                 st.error(f"Formula delete failed: {e}")
-```
