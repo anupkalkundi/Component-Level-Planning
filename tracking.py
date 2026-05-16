@@ -889,4 +889,3 @@ def show_tracking(conn, cur):
                     pass
 
                 st.error(f"Update failed: {e}")
-```
