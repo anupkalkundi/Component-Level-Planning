@@ -255,6 +255,11 @@ def ensure_generated_components_table(conn, cur):
 
     safe_execute(conn, cur, """
         ALTER TABLE generated_components
+        ADD COLUMN IF NOT EXISTS quantity INTEGER
+    """)
+
+    safe_execute(conn, cur, """
+        ALTER TABLE generated_components
         ADD COLUMN IF NOT EXISTS lh_quantity INTEGER DEFAULT 0
     """)
 
