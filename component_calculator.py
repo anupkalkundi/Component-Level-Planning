@@ -384,6 +384,7 @@ def show_component_calculator(conn, cur):
         ("architrave_extra_width", "Architrave Extra Width"),
         ("frame_horizontal_thickness", "Frame Horizontal Thickness"),
         ("frame_vertical_thickness", "Frame Vertical Thickness"),
+        ("shutter_thickness", "Shutter Thickness"),
         ("lh_quantity", "LH Quantity"),
         ("rh_quantity", "RH Quantity"),
     ]
@@ -409,6 +410,7 @@ def show_component_calculator(conn, cur):
             "architrave_extra_width",
             "frame_horizontal_thickness",
             "frame_vertical_thickness",
+            "shutter_thickness",
             "lh_quantity",
             "rh_quantity",
         }
