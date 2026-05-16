@@ -756,6 +756,3 @@ def show_component_calculator(conn, cur):
             except Exception as e:
                 conn.rollback()
                 st.error(f"Failed to send components to tracking: {e}")
-`House Number | Product | Component | LH | RH | Length | Width | Thickness | Total Quantity`
-
-No `Value` column and no `Base Quantity` column.
