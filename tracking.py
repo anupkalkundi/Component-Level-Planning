@@ -5,9 +5,6 @@ def show_tracking(conn, cur):
 
     st.title("🏭 Component Production Tracker")
 
-    # =========================================================
-    # CONNECTION CHECK
-    # =========================================================
     try:
         if conn.closed != 0:
             st.error("Database connection lost. Please refresh once.")
@@ -16,26 +13,7 @@ def show_tracking(conn, cur):
         st.error("Database connection issue. Please refresh.")
         return
 
-    # =========================================================
-    # SETUP TABLES
-    # =========================================================
     def ensure_tracking_tables():
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS generated_components (
-                id SERIAL PRIMARY KEY,
-                project_name TEXT,
-                unit_type TEXT,
-                house_number TEXT,
-                product_cat TEXT,
-                product_code TEXT,
-                orientation TEXT,
-                component TEXT,
-                attribute TEXT,
-                value NUMERIC,
-                quantity INTEGER DEFAULT 1,
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS component_stages (
@@ -64,7 +42,7 @@ def show_tracking(conn, cur):
             ("CNC", 5),
             ("Sent To Pre-Assembly", 6),
         ]
-        
+
         cur.execute("""
             DELETE FROM component_stages
             WHERE stage_name NOT IN (
@@ -76,7 +54,7 @@ def show_tracking(conn, cur):
                 'Sent To Pre-Assembly'
             )
         """)
-                
+
         execute_values(
             cur,
             """
@@ -93,9 +71,6 @@ def show_tracking(conn, cur):
 
     ensure_tracking_tables()
 
-    # =========================================================
-    # DATA FUNCTIONS
-    # =========================================================
     @st.cache_data(ttl=300)
     def get_projects():
         cur.execute("""
@@ -297,7 +272,9 @@ def show_tracking(conn, cur):
                 component,
                 attribute,
                 calculated_value,
-                COALESCE(quantity, 1) AS quantity
+                width,
+                thickness,
+                COALESCE(qty, 1) AS quantity
             FROM generated_components
             WHERE 1=1
         """
@@ -341,36 +318,36 @@ def show_tracking(conn, cur):
         cur.execute(query, params)
         return cur.fetchall()
 
-    # =========================================================
-    # FILTERS - MULTIPLE SELECTION
-    # =========================================================
+    def clean_dimension(value):
+        if value in [None, ""]:
+            return ""
+
+        try:
+            number = float(value)
+            if number.is_integer():
+                return str(int(number))
+            return str(number)
+        except Exception:
+            return str(value)
+
     st.markdown("### 🔎 Select Generated Components")
 
     row1_col1, row1_col2, row1_col3 = st.columns(3)
 
     with row1_col1:
         project_options = get_projects()
-        selected_projects = st.multiselect(
-            "Project",
-            project_options
-        )
+        selected_projects = st.multiselect("Project", project_options)
 
     with row1_col2:
         unit_options = get_units(tuple(selected_projects))
-        selected_units = st.multiselect(
-            "Unit Type",
-            unit_options
-        )
+        selected_units = st.multiselect("Unit Type", unit_options)
 
     with row1_col3:
         house_options = get_houses(
             tuple(selected_projects),
             tuple(selected_units)
         )
-        selected_houses = st.multiselect(
-            "House Number",
-            house_options
-        )
+        selected_houses = st.multiselect("House Number", house_options)
 
     row2_col1, row2_col2, row2_col3 = st.columns(3)
 
@@ -405,14 +382,8 @@ def show_tracking(conn, cur):
             tuple(selected_product_cats),
             tuple(selected_product_codes)
         )
-        selected_components = st.multiselect(
-            "Component",
-            component_options
-        )
+        selected_components = st.multiselect("Component", component_options)
 
-    # =========================================================
-    # FETCH COMPONENTS
-    # =========================================================
     rows = get_filtered_generated_components(
         selected_projects,
         selected_units,
@@ -438,9 +409,19 @@ def show_tracking(conn, cur):
             "orientation",
             "component",
             "attribute",
-            "value",
+            "length",
+            "width",
+            "thickness",
             "quantity"
         ]
+    )
+
+    df["dimension"] = (
+        df["length"].apply(clean_dimension)
+        + "*"
+        + df["width"].apply(clean_dimension)
+        + "*"
+        + df["thickness"].apply(clean_dimension)
     )
 
     df["display"] = (
@@ -449,10 +430,9 @@ def show_tracking(conn, cur):
         + df["product_code"].astype(str)
         + " • "
         + df["component"].astype(str)
-        + " • "
-        + df["attribute"].astype(str)
-        + " • Qty "
-        + df["quantity"].astype(str)
+        + " • dimension ("
+        + df["dimension"]
+        + ")"
     )
 
     search_text = st.text_input("🔍 Filter Components")
@@ -482,9 +462,7 @@ def show_tracking(conn, cur):
             key="component_selection_editor"
         )
 
-    selected_rows = edited_df[
-        edited_df["Select"] == True
-    ]
+    selected_rows = edited_df[edited_df["Select"] == True]
 
     if selected_rows.empty:
         st.info("Select components to continue")
@@ -497,9 +475,6 @@ def show_tracking(conn, cur):
 
     st.success(f"{len(selected_ids)} component row(s) selected")
 
-    # =========================================================
-    # LATEST STAGE
-    # =========================================================
     stage_sequence = get_stages()
 
     cur.execute("""
@@ -588,20 +563,13 @@ def show_tracking(conn, cur):
             "stage"
         ] = "Completed"
 
-    # =========================================================
-    # CURRENT LIVE STAGES
-    # =========================================================
     st.markdown("### 📍 Current Live Stages Found")
 
     available_stages = []
     stage_counts = {}
 
     for stage_name in ["Not Started"] + stage_sequence + ["Completed"]:
-        count = len(
-            matrix_df[
-                matrix_df["stage"] == stage_name
-            ]
-        )
+        count = len(matrix_df[matrix_df["stage"] == stage_name])
 
         if count > 0:
             available_stages.append(stage_name)
@@ -679,9 +647,7 @@ def show_tracking(conn, cur):
         key="component_stage_move_editor"
     )
 
-    chosen = edited_stage[
-        edited_stage["Move"] == True
-    ]
+    chosen = edited_stage[edited_stage["Move"] == True]
 
     if chosen.empty:
         return
@@ -718,9 +684,6 @@ def show_tracking(conn, cur):
         key="component_movement_selector"
     )
 
-    # =========================================================
-    # UPDATE FORM
-    # =========================================================
     with st.form(f"component_tracking_update_form_{movement_type}"):
 
         if movement_type == "Normal Forward Move":
@@ -756,10 +719,7 @@ def show_tracking(conn, cur):
                 allowed_stage_options
             )
 
-            status = st.selectbox(
-                "Update Status",
-                ["In Progress"]
-            )
+            status = st.selectbox("Update Status", ["In Progress"])
 
             rework_reason = st.selectbox(
                 "Rework Reason",
@@ -775,9 +735,7 @@ def show_tracking(conn, cur):
                 ]
             )
 
-            rework_note = st.text_input(
-                "Type Reason (Optional)"
-            )
+            rework_note = st.text_input("Type Reason (Optional)")
 
         update_quantity = st.number_input(
             "Quantity",
@@ -786,13 +744,8 @@ def show_tracking(conn, cur):
             step=1
         )
 
-        submitted = st.form_submit_button(
-            "Update Selected"
-        )
+        submitted = st.form_submit_button("Update Selected")
 
-    # =========================================================
-    # UPDATE LOGIC
-    # =========================================================
     if submitted:
 
         if movement_type == "Normal Forward Move":
@@ -803,9 +756,7 @@ def show_tracking(conn, cur):
                     selected_stage == current_stage
                     and status == "Completed"
                 ):
-                    st.error(
-                        "Complete current stage first before moving ahead"
-                    )
+                    st.error("Complete current stage first before moving ahead")
                     return
 
             elif current_status == "Completed":
@@ -821,11 +772,8 @@ def show_tracking(conn, cur):
                     return
 
         else:
-
             if selected_stage == current_stage:
-                st.error(
-                    "Rework stage cannot be same as current"
-                )
+                st.error("Rework stage cannot be same as current")
                 return
 
         with st.spinner("Updating selected components..."):
@@ -941,3 +889,4 @@ def show_tracking(conn, cur):
                     pass
 
                 st.error(f"Update failed: {e}")
+```
