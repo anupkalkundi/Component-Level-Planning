@@ -2,239 +2,181 @@ import streamlit as st
 import pandas as pd
 import re
 from decimal import Decimal
-from psycopg2.extras import Json
 
 
-# =========================================================
-# FORMULA ERROR
-# =========================================================
 class FormulaError(Exception):
     pass
 
 
-# =========================================================
-# VARIABLE ALIASES
-# =========================================================
 VARIABLE_ALIASES = {
-
-    # HEIGHT / LENGTH
-    "opening_length": "opening_height",
-    "height_opening": "opening_height",
-
-    # WIDTH
+    "opening_height": "opening_length",
+    "opening_l": "opening_length",
     "opening_w": "opening_width",
+    "height_opening": "opening_length",
     "width_opening": "opening_width",
 
-    # CLEARANCE
-    "clr": "clearance",
+    "clearance": "vertical_clearance",
+    "clr": "vertical_clearance",
+    "v_clearance": "vertical_clearance",
+    "h_clearance": "horizontal_clearance",
 
-    # EXTRA VALUES
-    "extra_w": "extra_width",
-    "extra_l": "extra_length",
+    "extra_l": "architrave_extra_length",
+    "extra_length": "architrave_extra_length",
+    "extra_w": "architrave_extra_width",
+    "extra_width": "architrave_extra_width",
 
-    # FRAME SHORTCUTS
     "frame_h_thk": "frame_horizontal_thickness",
     "frame_v_thk": "frame_vertical_thickness",
-
-    # COMMON SHORTCUTS
-    "allow": "allowance"
 }
 
 
-# =========================================================
-# DEFAULT VARIABLES
-# =========================================================
-DEFAULT_VARIABLES = [
+DEFAULT_VALUES = {
+    "opening_length": 2100.0,
+    "opening_width": 1200.0,
 
-    "opening_height",
-    "opening_width",
+    "vertical_clearance": 10.0,
+    "horizontal_clearance": 10.0,
+    "architrave_extra_length": 50.0,
+    "architrave_extra_width": 100.0,
+    "frame_horizontal_thickness": 50.0,
+    "frame_vertical_thickness": 50.0,
 
-    "clearance",
-
-    "extra_width",
-    "extra_length",
-
-    "allowance",
-
-    "frame_horizontal_thickness",
-    "frame_vertical_thickness",
-
-    "groove",
-    "cut",
-    "offset"
-]
+    "lh_quantity": 0.0,
+    "rh_quantity": 0.0,
+    "shutter_thickness": 0.0,
+    "allowance": 0.0,
+    "groove": 0.0,
+    "cut": 0.0,
+    "offset": 0.0,
+}
 
 
-# =========================================================
-# NORMALIZE VARIABLE
-# =========================================================
 def normalize_variable(var_name):
-
     var_name = str(var_name).strip()
-
-    return VARIABLE_ALIASES.get(
-        var_name,
-        var_name
-    )
+    return VARIABLE_ALIASES.get(var_name, var_name)
 
 
-# =========================================================
-# NORMALIZE FORMULA
-# =========================================================
 def normalize_formula(formula):
-
     formula = str(formula or "").strip()
 
-    for old_var, new_var in VARIABLE_ALIASES.items():
+    # Some Excel rows are like: Grilll_shutter_vertical=shutter_length
+    # We only need the right side as the formula expression.
+    if "=" in formula:
+        left, right = formula.split("=", 1)
+        if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_]*\s*", left):
+            formula = right.strip()
 
-        formula = re.sub(
-            rf"\b{old_var}\b",
-            new_var,
-            formula
-        )
+    for old_var, new_var in VARIABLE_ALIASES.items():
+        formula = re.sub(rf"\b{old_var}\b", new_var, formula)
 
     return formula
 
 
-# =========================================================
-# SAFE EXECUTE
-# =========================================================
 def safe_execute(conn, cur, query, params=None):
-
     try:
-
         cur.execute(query, params or ())
-
     except Exception as e:
-
         conn.rollback()
-
         raise e
 
 
-# =========================================================
-# GET DISTINCT VALUES
-# =========================================================
-def get_distinct_values(
-    conn,
-    cur,
-    table,
-    column,
-    where_sql="",
-    params=None
-):
-
+def get_distinct_values(conn, cur, table, column, where_sql="", params=None):
     query = f"""
         SELECT DISTINCT {column}
         FROM {table}
         {where_sql}
         ORDER BY {column}
     """
-
     safe_execute(conn, cur, query, params)
-
-    rows = cur.fetchall()
-
-    return [r[0] for r in rows if r[0] is not None]
+    return [r[0] for r in cur.fetchall() if r[0] is not None]
 
 
-# =========================================================
-# EXTRACT VARIABLES FROM FORMULA
-# =========================================================
 def extract_formula_variables(formula):
-
     if not formula:
         return []
 
     formula = normalize_formula(formula)
 
-    ignore_words = {
-        "abs",
-        "min",
-        "max",
-        "round",
-        "float",
-        "int",
-        "Decimal"
-    }
+    ignore_words = {"abs", "min", "max", "round", "float", "int", "Decimal"}
 
     variables = re.findall(
         r"\b[A-Za-z_][A-Za-z0-9_]*\b",
         str(formula)
     )
 
-    cleaned = []
-
-    for variable in variables:
-
-        if variable not in ignore_words:
-
-            cleaned.append(
-                normalize_variable(variable)
-            )
-
-    return sorted(list(set(cleaned)))
+    return sorted({
+        normalize_variable(v)
+        for v in variables
+        if v not in ignore_words
+    })
 
 
-# =========================================================
-# SAFE FORMULA EVALUATION
-# =========================================================
 def evaluate_formula(formula, variables):
-
     formula = normalize_formula(formula)
 
     if not formula:
         raise FormulaError("Formula empty")
 
-    allowed_functions = {
-        "abs": abs,
-        "min": min,
-        "max": max,
-        "round": round
-    }
-
     clean_vars = {}
 
     for k, v in variables.items():
-
         if v not in [None, ""]:
+            clean_vars[normalize_variable(k)] = float(v)
 
-            clean_vars[k] = float(v)
-
-    clean_vars.update(allowed_functions)
+    clean_vars.update({
+        "abs": abs,
+        "min": min,
+        "max": max,
+        "round": round,
+    })
 
     try:
-
         result = eval(
             formula,
             {"__builtins__": {}},
             clean_vars
         )
-
         return Decimal(str(round(result, 2)))
 
     except NameError as e:
-
-        missing_var = str(e)
-
-        raise FormulaError(f"Missing variable: {missing_var}")
+        raise FormulaError(f"Missing variable: {e}")
 
     except Exception as e:
-
         raise FormulaError(str(e))
 
 
-# =========================================================
-# MAIN PAGE
-# =========================================================
+def generated_variable_name(component, attribute=None):
+    parts = [str(component or "").strip()]
+
+    if attribute:
+        parts.append(str(attribute or "").strip())
+
+    return (
+        "_".join(parts)
+        .lower()
+        .replace(" ", "_")
+        .replace("-", "_")
+    )
+
+
+def resolve_quantity(component, quantity, previous_component_qty):
+    component_name = str(component or "").strip().lower()
+
+    # In your Excel, Flush Shutter quantity is merged.
+    # Length row has 1, width row becomes blank. Every door has 1 flush shutter.
+    if component_name == "flush shutter":
+        return 1
+
+    if quantity not in [None, ""]:
+        return quantity
+
+    return previous_component_qty.get(component_name, 1)
+
+
 def show_component_calculator(conn, cur):
 
     st.title("Component Calculator")
 
-
-    # =====================================================
-    # PROJECTS
-    # =====================================================
     projects = get_distinct_values(
         conn,
         cur,
@@ -244,21 +186,9 @@ def show_component_calculator(conn, cur):
 
     col1, col2, col3, col4 = st.columns(4)
 
-
-    # =====================================================
-    # PROJECT
-    # =====================================================
     with col1:
+        project_name = st.selectbox("Project", projects)
 
-        project_name = st.selectbox(
-            "Project",
-            projects
-        )
-
-
-    # =====================================================
-    # UNIT TYPES
-    # =====================================================
     unit_types = get_distinct_values(
         conn,
         cur,
@@ -269,16 +199,8 @@ def show_component_calculator(conn, cur):
     )
 
     with col2:
+        unit_type = st.selectbox("Unit Type", unit_types)
 
-        unit_type = st.selectbox(
-            "Unit Type",
-            unit_types
-        )
-
-
-    # =====================================================
-    # HOUSES
-    # =====================================================
     houses = get_distinct_values(
         conn,
         cur,
@@ -289,16 +211,12 @@ def show_component_calculator(conn, cur):
     )
 
     with col3:
-
-        house_number = st.selectbox(
+        selected_houses = st.multiselect(
             "House Number",
-            houses
+            houses,
+            default=houses[:1]
         )
 
-
-    # =====================================================
-    # PRODUCTS
-    # =====================================================
     safe_execute(conn, cur, """
         SELECT DISTINCT product_cat, product_code
         FROM products
@@ -313,22 +231,10 @@ def show_component_calculator(conn, cur):
     ]
 
     with col4:
+        selected_product = st.selectbox("Product", product_options)
 
-        selected_product = st.selectbox(
-            "Product",
-            product_options
-        )
-
-
-    # =====================================================
-    # SPLIT PRODUCT
-    # =====================================================
     product_cat, product_code = selected_product.split(" | ", 1)
 
-
-    # =====================================================
-    # FETCH RULES
-    # =====================================================
     safe_execute(conn, cur, """
         SELECT
             component,
@@ -343,199 +249,205 @@ def show_component_calculator(conn, cur):
 
     rules = cur.fetchall()
 
-
-    # =====================================================
-    # PYTHON EXECUTION ORDER
-    # =====================================================
     priority_map = {
         "Frame Vertical": 1,
         "Frame Horizontal": 2,
-        "Architrave Vertical": 3,
-        "Architrave Horizontal": 4,
-        "Flush Shutter": 5
+        "Door Frame Vertical": 3,
+        "Door Frame Horizontal": 4,
+        "Door Frame Vertical Beading": 5,
+        "Door Frame Horizontal Beading": 6,
+        "Architrave Vertical": 7,
+        "Architrave Horizontal": 8,
+        "Architrave Vertical Front": 9,
+        "Architrave Horizontal Front": 10,
+        "Flush Shutter": 11,
+        "Louver": 12,
     }
 
     rules = sorted(
         rules,
         key=lambda x: (
-            priority_map.get(x[0], 99),
-            x[1]
+            priority_map.get(str(x[0]).strip(), 99),
+            str(x[1]).strip()
         )
     )
 
-
-    # =====================================================
-    # FORMULA INPUTS
-    # =====================================================
     st.markdown("---")
-    st.subheader("Formula Inputs")
+    st.subheader("User Based Data")
 
     required_variables = set()
 
-
-    # =====================================================
-    # EXTRACT VARIABLES FROM FORMULAS
-    # =====================================================
     for rule in rules:
+        for variable in extract_formula_variables(rule[3]):
+            required_variables.add(variable)
 
-        formula = rule[3]
+    for variable in DEFAULT_VALUES:
+        required_variables.add(variable)
 
-        vars_found = extract_formula_variables(formula)
-
-        for v in vars_found:
-            required_variables.add(v)
-
-
-    # =====================================================
-    # ADD DEFAULT VARIABLES
-    # =====================================================
-    for v in DEFAULT_VARIABLES:
-        required_variables.add(v)
-
-
-    # =====================================================
-    # REMOVE GENERATED VARIABLES
-    # =====================================================
     generated_variables = set()
 
     for rule in rules:
+        component = rule[0]
+        attribute = rule[1]
 
-        component = str(rule[0]).lower().replace(" ", "_")
-        attribute = str(rule[1]).lower().replace(" ", "_")
+        generated_variables.add(
+            generated_variable_name(component, attribute)
+        )
 
-        generated_key = f"{component}_{attribute}"
-
-        generated_variables.add(generated_key)
+        # Some formulas refer only to component name, for example:
+        # door_frame_vertical - shutter_thickness
+        generated_variables.add(
+            generated_variable_name(component)
+        )
 
     required_variables = required_variables - generated_variables
 
-
-    # =====================================================
-    # DEFAULT VALUES
-    # =====================================================
-    default_values = {
-        "opening_height": 1200.0,
-        "opening_width": 2100.0,
-        "clearance": 20.0,
-        "extra_width": 50.0,
-        "extra_length": 100.0,
-        "allowance": 0.0,
-        "frame_horizontal_thickness": 50.0,
-        "frame_vertical_thickness": 50.0,
-        "groove": 0.0,
-        "cut": 0.0,
-        "offset": 0.0
-    }
-
-
-    # =====================================================
-    # INPUT UI
-    # =====================================================
     variables = {}
 
-    cols = st.columns(4)
+    st.markdown("#### Opening Size")
+    open_col1, open_col2 = st.columns(2)
 
-    for idx, variable in enumerate(sorted(required_variables)):
+    with open_col1:
+        variables["opening_length"] = st.number_input(
+            "Opening Length",
+            value=float(DEFAULT_VALUES["opening_length"]),
+            step=1.0,
+            format="%.2f"
+        )
 
-        with cols[idx % 4]:
+    with open_col2:
+        variables["opening_width"] = st.number_input(
+            "Opening Width",
+            value=float(DEFAULT_VALUES["opening_width"]),
+            step=1.0,
+            format="%.2f"
+        )
 
-            variables[variable] = st.number_input(
-                variable,
-                value=float(default_values.get(variable, 0.0)),
+    st.markdown("#### Component Inputs")
+    input_fields = [
+        ("vertical_clearance", "Vertical Clearance"),
+        ("horizontal_clearance", "Horizontal Clearance"),
+        ("architrave_extra_length", "Architrave Extra Length"),
+        ("architrave_extra_width", "Architrave Extra Width"),
+        ("frame_horizontal_thickness", "Frame Horizontal Thickness"),
+        ("frame_vertical_thickness", "Frame Vertical Thickness"),
+        ("lh_quantity", "LH Quantity"),
+        ("rh_quantity", "RH Quantity"),
+    ]
+
+    input_cols = st.columns(4)
+
+    for idx, (key, label) in enumerate(input_fields):
+        with input_cols[idx % 4]:
+            variables[key] = st.number_input(
+                label,
+                value=float(DEFAULT_VALUES.get(key, 0.0)),
                 step=1.0,
                 format="%.2f"
             )
 
+    extra_variables = sorted(
+        required_variables - {
+            "opening_length",
+            "opening_width",
+            "vertical_clearance",
+            "horizontal_clearance",
+            "architrave_extra_length",
+            "architrave_extra_width",
+            "frame_horizontal_thickness",
+            "frame_vertical_thickness",
+            "lh_quantity",
+            "rh_quantity",
+        }
+    )
+
+    if extra_variables:
+        st.markdown("#### Other Required Inputs")
+        extra_cols = st.columns(4)
+
+        for idx, variable in enumerate(extra_variables):
+            with extra_cols[idx % 4]:
+                variables[variable] = st.number_input(
+                    variable.replace("_", " ").title(),
+                    value=float(DEFAULT_VALUES.get(variable, 0.0)),
+                    step=1.0,
+                    format="%.2f"
+                )
 
     st.markdown("---")
 
-
-    # =====================================================
-    # GENERATE BUTTON
-    # =====================================================
     if st.button("Generate Components"):
 
+        if not selected_houses:
+            st.warning("Please select at least one house number.")
+            return
+
         preview_rows = []
-
         errors_found = False
+        previous_component_qty = {}
 
+        for house_number in selected_houses:
 
-        # =================================================
-        # LOOP RULES
-        # =================================================
-        for rule in rules:
+            # Each house should calculate independently.
+            house_variables = variables.copy()
 
-            component = rule[0]
-            attribute = rule[1]
-            rule_type = str(rule[2]).lower()
-            formula = rule[3]
-            quantity = rule[4]
+            for rule in rules:
 
-            value = None
-
-
-            # =============================================
-            # FORMULA TYPE
-            # =============================================
-            if rule_type == "formula":
-
-                try:
-
-                    value = evaluate_formula(
-                        formula,
-                        variables
-                    )
-
-                    # =====================================
-                    # STORE GENERATED VALUE
-                    # =====================================
-                    generated_key = (
-                        f"{component}_{attribute}"
-                        .lower()
-                        .replace(" ", "_")
-                    )
-
-                    variables[generated_key] = float(value)
-
-                except Exception as e:
-
-                    errors_found = True
-
-                    st.error(
-                        f"{component} / {attribute}: {e}"
-                    )
-
-
-            # =============================================
-            # FIXED TYPE
-            # =============================================
-            elif rule_type == "fixed":
-
-                value = quantity
-
-                generated_key = (
-                    f"{component}_{attribute}"
-                    .lower()
-                    .replace(" ", "_")
+                component = str(rule[0]).strip()
+                attribute = str(rule[1]).strip()
+                rule_type = str(rule[2] or "").strip().lower()
+                formula = rule[3]
+                quantity = resolve_quantity(
+                    component,
+                    rule[4],
+                    previous_component_qty
                 )
 
-                variables[generated_key] = float(value)
+                component_key = generated_variable_name(component)
+                attribute_key = generated_variable_name(component, attribute)
 
+                previous_component_qty[
+                    component.lower()
+                ] = quantity
 
-            # =============================================
-            # APPEND ROW
-            # =============================================
-            preview_rows.append({
-                "Component": component,
-                "Attribute": attribute,
-                "Formula": formula,
-                "Value": value
-            })
+                value = None
 
+                if rule_type in ["formula", "fomula"]:
 
-        # =================================================
-        # DISPLAY TABLE
-        # =================================================
+                    try:
+                        value = evaluate_formula(
+                            formula,
+                            house_variables
+                        )
+
+                        house_variables[attribute_key] = float(value)
+
+                        # Store component-level value also.
+                        # This helps formulas like door_frame_vertical - shutter_thickness.
+                        house_variables[component_key] = float(value)
+
+                    except Exception as e:
+                        errors_found = True
+                        st.error(f"{house_number} - {component} / {attribute}: {e}")
+
+                elif rule_type == "fixed":
+
+                    value = quantity
+
+                    house_variables[attribute_key] = float(value)
+                    house_variables[component_key] = float(value)
+
+                preview_rows.append({
+                    "House Number": house_number,
+                    "Product": product_code,
+                    "Component": component,
+                    "Attribute": attribute,
+                    "Type": rule_type,
+                    "Formula": normalize_formula(formula),
+                    "Value": value,
+                    "Quantity": quantity,
+                })
+
         st.subheader("Generated Components")
 
         df_preview = pd.DataFrame(preview_rows)
@@ -546,10 +458,5 @@ def show_component_calculator(conn, cur):
             hide_index=True
         )
 
-
-        # =================================================
-        # SUCCESS MESSAGE
-        # =================================================
         if not errors_found:
-
             st.success("All component formulas calculated successfully")
