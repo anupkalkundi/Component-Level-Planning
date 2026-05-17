@@ -222,9 +222,6 @@ def store_calculated_value(variables, component, attribute, value):
             value = Decimal("40")
         elif attribute_key == "thickness":
             value = Decimal("12")
-            
-   numeric_value = float(value)
-
     keys = {
         component_key,
         f"{component_key}_{attribute_key}",
