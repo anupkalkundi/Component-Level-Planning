@@ -216,12 +216,8 @@ def store_calculated_value(variables, component, attribute, value):
 
     component_key = slug(component)
     attribute_key = slug(attribute)
+    numeric_value = float(value)
     
-    if component_key in ["architrave_vertical", "architrave_horizontal"]:
-        if attribute_key == "width":
-            value = Decimal("40")
-        elif attribute_key == "thickness":
-            value = Decimal("12")
     keys = {
         component_key,
         f"{component_key}_{attribute_key}",
