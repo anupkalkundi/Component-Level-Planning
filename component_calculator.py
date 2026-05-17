@@ -197,6 +197,23 @@ def manual_dimension_key(component, attribute):
     return f"manual_{slug(component)}_{slug(attribute)}"
 
 
+def is_architrave_component(component):
+    return slug(component) in ["architrave_vertical", "architrave_horizontal"]
+
+
+def apply_fixed_architrave_value(component, attribute, value):
+    if is_architrave_component(component):
+        attribute_key = slug(attribute)
+
+        if attribute_key == "width":
+            return Decimal("40")
+
+        if attribute_key == "thickness":
+            return Decimal("12")
+
+    return value
+
+
 def needs_manual_dimension(rule):
     component, attribute, rule_type, formula, _ = rule
     attribute_key = slug(attribute)
@@ -217,7 +234,7 @@ def store_calculated_value(variables, component, attribute, value):
     component_key = slug(component)
     attribute_key = slug(attribute)
     numeric_value = float(value)
-    
+
     keys = {
         component_key,
         f"{component_key}_{attribute_key}",
@@ -540,6 +557,12 @@ def show_component_calculator(conn, cur):
                         if value is None:
                             value = Decimal("0")
 
+                        value = apply_fixed_architrave_value(
+                            component,
+                            attribute,
+                            value
+                        )
+
                         store_calculated_value(
                             house_variables,
                             component,
@@ -700,6 +723,12 @@ def show_component_calculator(conn, cur):
                 values.get("height", "")
             )
 
+            width_value = values.get("width", "")
+
+            if slug(component_name) in ["architrave_vertical", "architrave_horizontal"]:
+                width_value = Decimal("40")
+                thickness_value = Decimal("12")
+
             if component_name == "flush shutter":
                 thickness_value = st.session_state.get(
                     "generated_shutter_thickness",
@@ -711,7 +740,7 @@ def show_component_calculator(conn, cur):
                 "Product": first_row["Product"],
                 "Component": first_row["Component"],
                 "Length": values.get("length", ""),
-                "Width": values.get("width", ""),
+                "Width": width_value,
                 "Thickness": thickness_value,
                 "Total Quantity": first_row["Total Quantity"],
             })
@@ -770,6 +799,10 @@ def show_component_calculator(conn, cur):
 
                     if "thickness" in attrs:
                         thickness_value = attrs["thickness"]["value"]
+
+                    if is_architrave_component(row["component"]):
+                        width_value = 40
+                        thickness_value = 12
 
                     if str(row["component"]).strip().lower() == "flush shutter":
                         thickness_value = st.session_state.get(
