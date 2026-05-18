@@ -47,6 +47,19 @@ DEFAULT_VALUES = {
 }
 
 
+COMPONENT_INPUT_KEYS = {
+    "vertical_clearance",
+    "horizontal_clearance",
+    "architrave_extra_length",
+    "architrave_extra_width",
+    "frame_horizontal_thickness",
+    "frame_vertical_thickness",
+    "shutter_thickness",
+    "lh_quantity",
+    "rh_quantity",
+}
+
+
 FIXED_COMPONENT_DIMENSIONS = {
     "architrave_vertical": {
         "width": Decimal("40"),
@@ -223,6 +236,9 @@ def base_quantity(component, quantity, previous_qty):
     if component_key == "flush_shutter":
         return 1
 
+    if component_key == "architrave_vertical":
+        return 4
+
     if quantity not in [None, ""]:
         return int(float(quantity))
 
@@ -247,6 +263,11 @@ def has_fixed_dimension(component, attribute):
     return fixed_dimension_value(component, attribute) is not None
 
 
+def existing_component_input_key(component, attribute):
+    key = f"{slug(component)}_{slug(attribute)}"
+    return key if key in COMPONENT_INPUT_KEYS else None
+
+
 def is_architrave_component(component):
     return slug(component) in ["architrave_vertical", "architrave_horizontal"]
 
@@ -265,6 +286,9 @@ def needs_manual_dimension(rule):
     attribute_key = slug(attribute)
     rule_type = str(rule_type or "").strip().lower()
     formula = normalize_formula(formula)
+
+    if existing_component_input_key(component, attribute):
+        return False
 
     return (
         attribute_key in ["width", "thickness"]
@@ -297,6 +321,9 @@ def selected_component_manual_dimensions(rules):
 
         for attribute in ["width", "thickness"]:
             if has_fixed_dimension(component, attribute):
+                continue
+
+            if existing_component_input_key(component, attribute):
                 continue
 
             if attribute not in attributes:
@@ -333,6 +360,26 @@ def store_calculated_value(variables, component, attribute, value):
         variables[key] = numeric_value
 
 
+def get_dimension_value(component, attribute, variables):
+    fixed_value_for_component = fixed_dimension_value(component, attribute)
+
+    if fixed_value_for_component is not None:
+        return fixed_value_for_component
+
+    input_key = existing_component_input_key(component, attribute)
+
+    if input_key:
+        return Decimal(str(round(float(variables.get(input_key, 0.0)), 2)))
+
+    return Decimal(str(round(
+        float(variables.get(
+            manual_dimension_key(component, attribute),
+            0.0
+        )),
+        2
+    )))
+
+
 def calculate_cft(length, width, thickness, quantity):
     length_num = clean_number(length)
     width_num = clean_number(width)
@@ -340,10 +387,10 @@ def calculate_cft(length, width, thickness, quantity):
     quantity_num = clean_number(quantity)
 
     if None in [length_num, width_num, thickness_num, quantity_num]:
-        return Decimal("0")
+        return Decimal("0.0")
 
     cft = length_num * width_num * thickness_num / 1000000000 * 35.315 * quantity_num
-    return Decimal(str(round(cft, 4)))
+    return Decimal(str(round(cft, 1)))
 
 
 def ensure_generated_components_table(conn, cur):
@@ -478,25 +525,6 @@ def show_component_calculator(conn, cur):
     st.markdown("---")
     st.subheader("User Based Data")
 
-    required_variables = set()
-
-    for rule in rules:
-        for variable in extract_formula_variables(rule[3]):
-            required_variables.add(variable)
-
-    for variable in DEFAULT_VALUES:
-        required_variables.add(variable)
-
-    generated_variables = set()
-
-    for component, attribute, _, _, _ in rules:
-        component_key = slug(component)
-        attribute_key = slug(attribute)
-        generated_variables.add(component_key)
-        generated_variables.add(f"{component_key}_{attribute_key}")
-
-    required_variables = required_variables - generated_variables
-
     variables = {}
 
     st.markdown("#### Opening Size")
@@ -618,13 +646,11 @@ def show_component_calculator(conn, cur):
                             value = evaluate_formula(formula, house_variables)
 
                         elif needs_manual_dimension(rule):
-                            value = Decimal(str(round(
-                                float(variables.get(
-                                    manual_dimension_key(component, attribute),
-                                    0.0
-                                )),
-                                2
-                            )))
+                            value = get_dimension_value(
+                                component,
+                                attribute,
+                                variables
+                            )
 
                         else:
                             value = fixed_value(formula, quantity)
@@ -745,27 +771,17 @@ def show_component_calculator(conn, cur):
                     if attribute in row["attributes"]:
                         continue
 
-                    fixed_value_for_component = fixed_dimension_value(
+                    value = get_dimension_value(
                         row["component"],
-                        attribute
+                        attribute,
+                        variables
                     )
-
-                    if fixed_value_for_component is not None:
-                        value = fixed_value_for_component
-                    else:
-                        value = Decimal(str(round(
-                            float(variables.get(
-                                manual_dimension_key(row["component"], attribute),
-                                0.0
-                            )),
-                            2
-                        )))
 
                     row["attributes"][attribute] = {
                         "type": "manual",
                         "formula": "",
                         "value": float(value),
-                        "base_quantity": row["quantity"],
+                        "base_quantity": base_quantity(row["component"], None, previous_qty),
                     }
 
                     calculated_rules.append({
@@ -776,7 +792,7 @@ def show_component_calculator(conn, cur):
                         "Type": "manual",
                         "Formula": "",
                         "Value": value,
-                        "Base Quantity": 1,
+                        "Base Quantity": base_quantity(row["component"], None, previous_qty),
                         "Total Quantity": row["quantity"],
                         "LH Quantity": lh_quantity,
                         "RH Quantity": rh_quantity,
@@ -857,13 +873,14 @@ def show_component_calculator(conn, cur):
                     "generated_shutter_thickness",
                     ""
                 )
-
-            cft_value = calculate_cft(
-                length_value,
-                width_value,
-                thickness_value,
-                first_row["Total Quantity"]
-            )
+                cft_value = Decimal("0.0")
+            else:
+                cft_value = calculate_cft(
+                    length_value,
+                    width_value,
+                    thickness_value,
+                    first_row["Total Quantity"]
+                )
 
             display_rows.append({
                 "House Number": first_row["House Number"],
@@ -875,6 +892,22 @@ def show_component_calculator(conn, cur):
                 "Total Quantity": first_row["Total Quantity"],
                 "CFT": cft_value,
             })
+
+        total_cft = sum(
+            clean_number(row.get("CFT")) or 0
+            for row in display_rows
+        )
+
+        display_rows.append({
+            "House Number": "",
+            "Product": "",
+            "Component": "CFT Total",
+            "Length": "",
+            "Width": "",
+            "Thickness": "",
+            "Total Quantity": "",
+            "CFT": Decimal(str(round(total_cft, 1))),
+        })
 
         df_preview = pd.DataFrame(display_rows)
 
@@ -945,13 +978,14 @@ def show_component_calculator(conn, cur):
                             "generated_shutter_thickness",
                             None
                         )
-
-                    cft_value = calculate_cft(
-                        length_value,
-                        width_value,
-                        thickness_value,
-                        row["quantity"]
-                    )
+                        cft_value = Decimal("0.0")
+                    else:
+                        cft_value = calculate_cft(
+                            length_value,
+                            width_value,
+                            thickness_value,
+                            row["quantity"]
+                        )
 
                     generated_insert_rows.append((
                         row["project_name"],
