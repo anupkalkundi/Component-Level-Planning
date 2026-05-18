@@ -507,7 +507,7 @@ def show_component_calculator(conn, cur):
             "Opening Length",
             value=float(DEFAULT_VALUES["opening_length"]),
             step=1.0,
-            format="%.2f"
+            format="%.2f",
             key="input_opening_length"
         )
 
@@ -516,7 +516,7 @@ def show_component_calculator(conn, cur):
             "Opening Width",
             value=float(DEFAULT_VALUES["opening_width"]),
             step=1.0,
-            format="%.2f"
+            format="%.2f",
             key="input_opening_width"
         )
 
@@ -542,7 +542,7 @@ def show_component_calculator(conn, cur):
                 label,
                 value=float(DEFAULT_VALUES.get(key, 0.0)),
                 step=1.0,
-                format="%.2f"
+                format="%.2f",
                 key=f"input_{key}"
             )
 
@@ -560,7 +560,7 @@ def show_component_calculator(conn, cur):
                     f"{component} {attribute}".title(),
                     value=0.0,
                     step=1.0,
-                    format="%.2f"
+                    format="%.2f",
                     key=f"manual_input_{slug(component)}_{slug(attribute)}_{idx}"
                 )
 
