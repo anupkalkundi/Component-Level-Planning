@@ -216,6 +216,15 @@ def clean_number(value):
         return None
 
 
+def clean_int(value):
+    number = clean_number(value)
+
+    if number is None or pd.isna(number):
+        return 0
+
+    return int(float(number))
+
+
 def fixed_value(formula, quantity):
     formula_num = clean_number(formula)
 
@@ -387,7 +396,7 @@ def calculate_cft(length, width, thickness, quantity, round_value=True):
     quantity_num = clean_number(quantity)
 
     if None in [length_num, width_num, thickness_num, quantity_num]:
-        return Decimal("0.0")
+        return Decimal("0.00")
 
     cft = length_num * width_num * thickness_num / 1000000000 * 35.315 * quantity_num
 
@@ -527,6 +536,45 @@ def show_component_calculator(conn, cur):
         return
 
     st.markdown("---")
+    st.subheader("House Wise LH / RH Quantity")
+
+    house_qty_df = pd.DataFrame({
+        "House Number": selected_houses,
+        "LH Quantity": [0 for _ in selected_houses],
+        "RH Quantity": [0 for _ in selected_houses],
+    })
+
+    edited_house_qty_df = st.data_editor(
+        house_qty_df,
+        use_container_width=True,
+        hide_index=True,
+        key=f"house_wise_lh_rh_qty_{product_cat}_{product_code}",
+        disabled=["House Number"]
+    )
+
+    house_qty_map = {
+        str(row["House Number"]): {
+            "lh_quantity": clean_int(row["LH Quantity"]),
+            "rh_quantity": clean_int(row["RH Quantity"]),
+        }
+        for _, row in edited_house_qty_df.iterrows()
+    }
+
+    total_lh_quantity = sum(
+        item["lh_quantity"]
+        for item in house_qty_map.values()
+    )
+
+    total_rh_quantity = sum(
+        item["rh_quantity"]
+        for item in house_qty_map.values()
+    )
+
+    st.info(
+        f"Total LH Quantity: {total_lh_quantity} | Total RH Quantity: {total_rh_quantity} | Total Quantity: {total_lh_quantity + total_rh_quantity}"
+    )
+
+    st.markdown("---")
     st.subheader("User Based Data")
 
     variables = {}
@@ -562,8 +610,6 @@ def show_component_calculator(conn, cur):
         ("frame_horizontal_thickness", "Frame Horizontal Thickness"),
         ("frame_vertical_thickness", "Frame Vertical Thickness"),
         ("shutter_thickness", "Shutter Thickness"),
-        ("lh_quantity", "LH Quantity"),
-        ("rh_quantity", "RH Quantity"),
     ]
 
     input_cols = st.columns(4)
@@ -604,12 +650,8 @@ def show_component_calculator(conn, cur):
             st.warning("Please select at least one house number.")
             return
 
-        lh_quantity = int(float(variables.get("lh_quantity", 0)))
-        rh_quantity = int(float(variables.get("rh_quantity", 0)))
-        product_qty_multiplier = lh_quantity + rh_quantity
-
-        if product_qty_multiplier <= 0:
-            st.warning("Please enter LH Quantity or RH Quantity.")
+        if not house_qty_map:
+            st.warning("Please enter house-wise LH/RH Quantity.")
             return
 
         preview_rows = []
@@ -618,7 +660,20 @@ def show_component_calculator(conn, cur):
 
         for house_number in selected_houses:
 
+            house_qty = house_qty_map.get(str(house_number), {})
+            lh_quantity = int(float(house_qty.get("lh_quantity", 0)))
+            rh_quantity = int(float(house_qty.get("rh_quantity", 0)))
+            product_qty_multiplier = lh_quantity + rh_quantity
+
+            if product_qty_multiplier <= 0:
+                st.warning(f"Please enter LH Quantity or RH Quantity for house {house_number}.")
+                errors_found = True
+                continue
+
             house_variables = variables.copy()
+            house_variables["lh_quantity"] = lh_quantity
+            house_variables["rh_quantity"] = rh_quantity
+
             pending_rules = list(rules)
             calculated_rules = []
             previous_qty = {}
@@ -808,8 +863,8 @@ def show_component_calculator(conn, cur):
         st.session_state["generated_component_preview"] = preview_rows
         st.session_state["generated_component_tracking_rows"] = tracking_rows
         st.session_state["generated_component_errors"] = errors_found
-        st.session_state["generated_lh_quantity"] = lh_quantity
-        st.session_state["generated_rh_quantity"] = rh_quantity
+        st.session_state["generated_lh_quantity"] = total_lh_quantity
+        st.session_state["generated_rh_quantity"] = total_rh_quantity
         st.session_state["generated_shutter_thickness"] = variables.get(
             "shutter_thickness",
             ""
@@ -823,7 +878,7 @@ def show_component_calculator(conn, cur):
         generated_rh = st.session_state.get("generated_rh_quantity", 0)
 
         st.info(
-            f"LH Quantity: {generated_lh} | RH Quantity: {generated_rh}"
+            f"Total LH Quantity: {generated_lh} | Total RH Quantity: {generated_rh} | Total Quantity: {generated_lh + generated_rh}"
         )
 
         df_preview_raw = pd.DataFrame(
@@ -877,20 +932,21 @@ def show_component_calculator(conn, cur):
                     "generated_shutter_thickness",
                     ""
                 )
-        
+
             cft_value = calculate_cft(
-                    length_value,
-                    width_value,
-                    thickness_value,
-                    first_row["Total Quantity"],
-                    round_value=True
+                length_value,
+                width_value,
+                thickness_value,
+                first_row["Total Quantity"],
+                round_value=True
             )
+
             cft_total_value = calculate_cft(
-                    length_value,
-                    width_value,
-                    thickness_value,
-                    first_row["Total Quantity"],
-                    round_value=False
+                length_value,
+                width_value,
+                thickness_value,
+                first_row["Total Quantity"],
+                round_value=False
             )
 
             display_rows.append({
@@ -994,13 +1050,13 @@ def show_component_calculator(conn, cur):
                             "generated_shutter_thickness",
                             None
                         )
-    
+
                     cft_value = calculate_cft(
-                            length_value,
-                            width_value,
-                            thickness_value,
-                            row["quantity"],
-                            round_value=True
+                        length_value,
+                        width_value,
+                        thickness_value,
+                        row["quantity"],
+                        round_value=True
                     )
 
                     generated_insert_rows.append((
