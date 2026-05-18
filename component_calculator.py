@@ -885,13 +885,15 @@ def show_component_calculator(conn, cur):
             st.session_state["generated_component_preview"]
         )
 
-        display_rows = []
+        house_rows = []
 
         group_cols = [
             "House Number",
             "Product",
             "Component",
             "Total Quantity",
+            "LH Quantity",
+            "RH Quantity",
         ]
 
         for _, group_df in df_preview_raw.groupby(
@@ -949,7 +951,7 @@ def show_component_calculator(conn, cur):
                 round_value=False
             )
 
-            display_rows.append({
+            house_rows.append({
                 "House Number": first_row["House Number"],
                 "Product": first_row["Product"],
                 "Component": first_row["Component"],
@@ -957,9 +959,70 @@ def show_component_calculator(conn, cur):
                 "Width": width_value,
                 "Thickness": thickness_value,
                 "Total Quantity": first_row["Total Quantity"],
+                "LH Quantity": first_row["LH Quantity"],
+                "RH Quantity": first_row["RH Quantity"],
                 "CFT": cft_value,
                 "CFT Raw": cft_total_value,
             })
+
+        display_rows = []
+
+        df_house_rows = pd.DataFrame(house_rows)
+
+        if not df_house_rows.empty:
+            aggregate_cols = [
+                "Product",
+                "Component",
+                "Length",
+                "Width",
+                "Thickness",
+            ]
+
+            for _, group_df in df_house_rows.groupby(
+                aggregate_cols,
+                dropna=False,
+                sort=False
+            ):
+                first_row = group_df.iloc[0].to_dict()
+
+                house_numbers = [
+                    str(value)
+                    for value in group_df["House Number"].tolist()
+                ]
+
+                lh_values = [
+                    f'{row["House Number"]}: {int(row["LH Quantity"])}'
+                    for _, row in group_df.iterrows()
+                ]
+
+                rh_values = [
+                    f'{row["House Number"]}: {int(row["RH Quantity"])}'
+                    for _, row in group_df.iterrows()
+                ]
+
+                total_quantity = sum(
+                    clean_int(value)
+                    for value in group_df["Total Quantity"].tolist()
+                )
+
+                total_cft_raw = sum(
+                    clean_number(value) or 0
+                    for value in group_df["CFT Raw"].tolist()
+                )
+
+                display_rows.append({
+                    "House Number": "\n".join(house_numbers),
+                    "Product": first_row["Product"],
+                    "Component": first_row["Component"],
+                    "Length": first_row["Length"],
+                    "Width": first_row["Width"],
+                    "Thickness": first_row["Thickness"],
+                    "LH Quantity": "\n".join(lh_values),
+                    "RH Quantity": "\n".join(rh_values),
+                    "Total Quantity": total_quantity,
+                    "CFT": Decimal(str(round(total_cft_raw, 2))),
+                    "CFT Raw": total_cft_raw,
+                })
 
         total_cft = sum(
             clean_number(row.get("CFT Raw")) or 0
@@ -973,6 +1036,8 @@ def show_component_calculator(conn, cur):
             "Length": "",
             "Width": "",
             "Thickness": "",
+            "LH Quantity": "",
+            "RH Quantity": "",
             "Total Quantity": "",
             "CFT": Decimal(str(round(total_cft, 2))),
             "CFT Raw": total_cft,
