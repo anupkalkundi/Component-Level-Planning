@@ -508,6 +508,7 @@ def show_component_calculator(conn, cur):
             value=float(DEFAULT_VALUES["opening_length"]),
             step=1.0,
             format="%.2f"
+            key="input_opening_length"
         )
 
     with open_col2:
@@ -516,6 +517,7 @@ def show_component_calculator(conn, cur):
             value=float(DEFAULT_VALUES["opening_width"]),
             step=1.0,
             format="%.2f"
+            key="input_opening_width"
         )
 
     st.markdown("#### Component Inputs")
@@ -541,6 +543,7 @@ def show_component_calculator(conn, cur):
                 value=float(DEFAULT_VALUES.get(key, 0.0)),
                 step=1.0,
                 format="%.2f"
+                key=f"input_{key}"
             )
 
     manual_dimensions = selected_component_manual_dimensions(rules)
@@ -558,6 +561,7 @@ def show_component_calculator(conn, cur):
                     value=0.0,
                     step=1.0,
                     format="%.2f"
+                    key=f"manual_input_{slug(component)}_{slug(attribute)}_{idx}"
                 )
 
     st.markdown("---")
