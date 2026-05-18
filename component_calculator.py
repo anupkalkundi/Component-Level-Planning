@@ -380,7 +380,7 @@ def get_dimension_value(component, attribute, variables):
     )))
 
 
-def calculate_cft(length, width, thickness, quantity):
+def calculate_cft(length, width, thickness, quantity, round_value=True):
     length_num = clean_number(length)
     width_num = clean_number(width)
     thickness_num = clean_number(thickness)
@@ -390,7 +390,11 @@ def calculate_cft(length, width, thickness, quantity):
         return Decimal("0.0")
 
     cft = length_num * width_num * thickness_num / 1000000000 * 35.315 * quantity_num
-    return Decimal(str(round(cft, 1)))
+
+    if round_value:
+        return Decimal(str(round(cft, 1)))
+
+    return Decimal(str(cft))
 
 
 def ensure_generated_components_table(conn, cur):
@@ -874,12 +878,21 @@ def show_component_calculator(conn, cur):
                     ""
                 )
                 cft_value = Decimal("0.0")
+                cft_total_value = Decimal("0.0")
             else:
                 cft_value = calculate_cft(
                     length_value,
                     width_value,
                     thickness_value,
-                    first_row["Total Quantity"]
+                    first_row["Total Quantity"],
+                    round_value=True
+                )
+                cft_total_value = calculate_cft(
+                    length_value,
+                    width_value,
+                    thickness_value,
+                    first_row["Total Quantity"],
+                    round_value=False
                 )
 
             display_rows.append({
@@ -891,10 +904,11 @@ def show_component_calculator(conn, cur):
                 "Thickness": thickness_value,
                 "Total Quantity": first_row["Total Quantity"],
                 "CFT": cft_value,
+                "CFT Raw": cft_total_value,
             })
 
         total_cft = sum(
-            clean_number(row.get("CFT")) or 0
+            clean_number(row.get("CFT Raw")) or 0
             for row in display_rows
         )
 
@@ -907,9 +921,13 @@ def show_component_calculator(conn, cur):
             "Thickness": "",
             "Total Quantity": "",
             "CFT": Decimal(str(round(total_cft, 1))),
+            "CFT Raw": total_cft,
         })
 
         df_preview = pd.DataFrame(display_rows)
+
+        if "CFT Raw" in df_preview.columns:
+            df_preview = df_preview.drop(columns=["CFT Raw"])
 
         st.dataframe(
             df_preview,
@@ -984,7 +1002,8 @@ def show_component_calculator(conn, cur):
                             length_value,
                             width_value,
                             thickness_value,
-                            row["quantity"]
+                            row["quantity"],
+                            round_value=True
                         )
 
                     generated_insert_rows.append((
