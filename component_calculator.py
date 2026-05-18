@@ -878,20 +878,20 @@ def show_component_calculator(conn, cur):
                     ""
                 )
         
-                cft_value = calculate_cft(
+            cft_value = calculate_cft(
                     length_value,
                     width_value,
                     thickness_value,
                     first_row["Total Quantity"],
                     round_value=True
-                )
-                cft_total_value = calculate_cft(
+            )
+            cft_total_value = calculate_cft(
                     length_value,
                     width_value,
                     thickness_value,
                     first_row["Total Quantity"],
                     round_value=False
-                )
+            )
 
             display_rows.append({
                 "House Number": first_row["House Number"],
@@ -995,13 +995,13 @@ def show_component_calculator(conn, cur):
                             None
                         )
     
-                        cft_value = calculate_cft(
+                    cft_value = calculate_cft(
                             length_value,
                             width_value,
                             thickness_value,
                             row["quantity"],
                             round_value=True
-                        )
+                    )
 
                     generated_insert_rows.append((
                         row["project_name"],
