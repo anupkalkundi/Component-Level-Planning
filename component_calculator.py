@@ -392,7 +392,7 @@ def calculate_cft(length, width, thickness, quantity, round_value=True):
     cft = length_num * width_num * thickness_num / 1000000000 * 35.315 * quantity_num
 
     if round_value:
-        return Decimal(str(round(cft, 1)))
+        return Decimal(str(round(cft, 2)))
 
     return Decimal(str(cft))
 
@@ -918,7 +918,7 @@ def show_component_calculator(conn, cur):
             "Width": "",
             "Thickness": "",
             "Total Quantity": "",
-            "CFT": Decimal(str(round(total_cft, 1))),
+            "CFT": Decimal(str(round(total_cft, 2))),
             "CFT Raw": total_cft,
         })
 
