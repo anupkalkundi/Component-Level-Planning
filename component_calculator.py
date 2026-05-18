@@ -877,9 +877,7 @@ def show_component_calculator(conn, cur):
                     "generated_shutter_thickness",
                     ""
                 )
-                cft_value = Decimal("0.0")
-                cft_total_value = Decimal("0.0")
-            else:
+        
                 cft_value = calculate_cft(
                     length_value,
                     width_value,
@@ -996,8 +994,7 @@ def show_component_calculator(conn, cur):
                             "generated_shutter_thickness",
                             None
                         )
-                        cft_value = Decimal("0.0")
-                    else:
+    
                         cft_value = calculate_cft(
                             length_value,
                             width_value,
