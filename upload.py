@@ -99,6 +99,12 @@ def show_upload(conn, cur):
         formula = formula.replace("–", "-").replace("—", "-")
 
         formula = re.sub(
+            r"(?<=[A-Za-z_])-(?=[A-Za-z_])",
+            "_",
+            formula
+        )
+
+        formula = re.sub(
             r"\b([A-Za-z_][A-Za-z0-9_]*)-(\d+)\b",
             r"\1_\2",
             formula
@@ -239,6 +245,57 @@ def show_upload(conn, cur):
         """
 
         execute_values(cur, query, rows)
+        return cur.rowcount
+
+    def insert_component_rules(rule_rows):
+        if not rule_rows:
+            return 0
+
+        execute_values(
+            cur,
+            """
+            INSERT INTO product_component_rules
+            (
+                product_cat,
+                product_code,
+                component,
+                attribute,
+                type,
+                formula_used,
+                quantity
+            )
+            SELECT
+                v.product_cat::TEXT,
+                v.product_code::TEXT,
+                v.component::TEXT,
+                v.attribute::TEXT,
+                v.type::TEXT,
+                v.formula_used::TEXT,
+                v.quantity::TEXT
+            FROM (VALUES %s) AS v(
+                product_cat,
+                product_code,
+                component,
+                attribute,
+                type,
+                formula_used,
+                quantity
+            )
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM product_component_rules t
+                WHERE COALESCE(t.product_cat::TEXT, '') = COALESCE(v.product_cat::TEXT, '')
+                AND COALESCE(t.product_code::TEXT, '') = COALESCE(v.product_code::TEXT, '')
+                AND COALESCE(t.component::TEXT, '') = COALESCE(v.component::TEXT, '')
+                AND COALESCE(t.attribute::TEXT, '') = COALESCE(v.attribute::TEXT, '')
+                AND COALESCE(t.type::TEXT, '') = COALESCE(v.type::TEXT, '')
+                AND COALESCE(t.formula_used::TEXT, '') = COALESCE(v.formula_used::TEXT, '')
+                AND COALESCE(t.quantity::TEXT, '') = COALESCE(v.quantity::TEXT, '')
+            )
+            """,
+            rule_rows
+        )
+
         return cur.rowcount
 
     def read_component_architecture(file):
@@ -602,35 +659,9 @@ def show_upload(conn, cur):
 
         ensure_quantity_text_column()
 
-        rule_rows = (
-            df[
-                [
-                    "product_cat",
-                    "product_code",
-                    "component",
-                    "attribute",
-                    "type",
-                    "formula_used",
-                    "quantity"
-                ]
-            ]
-            .drop_duplicates()
-            .values
-            .tolist()
-        )
+        rule_rows = []
 
-        inserted_rules = insert_values_where_not_exists(
-            "product_component_rules",
-            [
-                "product_cat",
-                "product_code",
-                "component",
-                "attribute",
-                "type",
-                "formula_used",
-                "quantity"
-            ],
-            rule_rows,
+        rule_df = df[
             [
                 "product_cat",
                 "product_code",
@@ -640,7 +671,20 @@ def show_upload(conn, cur):
                 "formula_used",
                 "quantity"
             ]
-        )
+        ].drop_duplicates()
+
+        for _, row in rule_df.iterrows():
+            rule_rows.append((
+                "" if pd.isna(row["product_cat"]) else str(row["product_cat"]),
+                "" if pd.isna(row["product_code"]) else str(row["product_code"]),
+                "" if pd.isna(row["component"]) else str(row["component"]),
+                "" if pd.isna(row["attribute"]) else str(row["attribute"]),
+                "" if pd.isna(row["type"]) else str(row["type"]),
+                "" if pd.isna(row["formula_used"]) else str(row["formula_used"]),
+                None if pd.isna(row["quantity"]) else str(row["quantity"]),
+            ))
+
+        inserted_rules = insert_component_rules(rule_rows)
 
         conn.commit()
         progress.progress(55)
@@ -1071,11 +1115,9 @@ Updated Formula Rules:
             )
 
         with add_row2_col3:
-            add_quantity = st.number_input(
+            add_quantity = st.text_input(
                 "Quantity",
-                min_value=0,
-                value=1,
-                step=1,
+                value="1",
                 key="add_quantity"
             )
 
