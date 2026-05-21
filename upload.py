@@ -72,15 +72,11 @@ def show_upload(conn, cur):
     def split_product_codes(value):
         value = clean_text(value)
 
-        if not value:
-            return []
+       if not value:
+           return []
 
-        return [
-            code.strip()
-            for code in value.split(",")
-            if code.strip()
-        ]
-
+       return [value]
+    
     def normalize_formula(formula):
         formula = clean_text(formula)
 
