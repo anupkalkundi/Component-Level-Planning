@@ -32,6 +32,20 @@ def show_upload(conn, cur):
         except Exception:
             return None
 
+    def clean_quantity(value):
+        if pd.isna(value) or value == "":
+            return None
+
+        value_text = str(value).strip()
+
+        if value_text.lower().startswith("if "):
+            return value_text
+
+        try:
+            return str(int(float(value_text)))
+        except Exception:
+            return value_text
+
     def normalize_columns(df):
         df.columns = (
             df.columns
@@ -87,24 +101,6 @@ def show_upload(conn, cur):
         formula = re.sub(
             r"\b([A-Za-z_][A-Za-z0-9_]*)-(\d+)\b",
             r"\1_\2",
-            formula
-        )
-
-        formula = re.sub(
-            r"\b([A-Za-z_][A-Za-z0-9_]*?)_?height_(\d+)\b",
-            r"\1_height_\2",
-            formula
-        )
-
-        formula = re.sub(
-            r"\b([A-Za-z_][A-Za-z0-9_]*?)_?length_(\d+)\b",
-            r"\1_length_\2",
-            formula
-        )
-
-        formula = re.sub(
-            r"\b([A-Za-z_][A-Za-z0-9_]*?)_?width_(\d+)\b",
-            r"\1_width_\2",
             formula
         )
 
@@ -204,6 +200,14 @@ def show_upload(conn, cur):
             component,
             attribute
         """
+
+    def ensure_quantity_text_column():
+        cur.execute("""
+            ALTER TABLE product_component_rules
+            ALTER COLUMN quantity TYPE TEXT
+            USING quantity::TEXT
+        """)
+        conn.commit()
 
     def insert_values_where_not_exists(
         table,
@@ -351,7 +355,7 @@ def show_upload(conn, cur):
         df["product_code"] = df["product_code"].apply(clean_text)
         df["component"] = df["component"].apply(clean_text)
         df["formula_used"] = df["formula_used"].apply(normalize_formula)
-        df["quantity"] = df["quantity"].apply(clean_int)
+        df["quantity"] = df["quantity"].apply(clean_quantity)
 
         if has_attribute_type:
             df["attribute"] = df["attribute"].apply(clean_text)
@@ -394,7 +398,7 @@ def show_upload(conn, cur):
         df.loc[
             df["component"].str.lower().str.strip() == "flush shutter",
             "quantity"
-        ] = 1
+        ] = "1"
 
         expanded_rows = []
 
@@ -410,7 +414,7 @@ def show_upload(conn, cur):
                         "attribute": row["attribute"],
                         "type": row["type"],
                         "formula_used": row["formula_used"],
-                        "quantity": clean_int(row["quantity"]),
+                        "quantity": clean_quantity(row["quantity"]),
                     })
 
                     if has_width and row.get("width") is not None:
@@ -421,7 +425,7 @@ def show_upload(conn, cur):
                             "attribute": "width",
                             "type": "fixed",
                             "formula_used": str(row["width"]),
-                            "quantity": clean_int(row["quantity"]),
+                            "quantity": clean_quantity(row["quantity"]),
                         })
 
                     if has_thickness and row.get("thickness") is not None:
@@ -432,7 +436,7 @@ def show_upload(conn, cur):
                             "attribute": "thickness",
                             "type": "fixed",
                             "formula_used": str(row["thickness"]),
-                            "quantity": clean_int(row["quantity"]),
+                            "quantity": clean_quantity(row["quantity"]),
                         })
 
                 else:
@@ -443,7 +447,7 @@ def show_upload(conn, cur):
                         "attribute": "length",
                         "type": "formula",
                         "formula_used": row["formula_used"],
-                        "quantity": clean_int(row["quantity"]),
+                        "quantity": clean_quantity(row["quantity"]),
                     })
 
                     if has_width and row.get("width") is not None:
@@ -454,7 +458,7 @@ def show_upload(conn, cur):
                             "attribute": "width",
                             "type": "fixed",
                             "formula_used": str(row["width"]),
-                            "quantity": clean_int(row["quantity"]),
+                            "quantity": clean_quantity(row["quantity"]),
                         })
 
                     if has_thickness and row.get("thickness") is not None:
@@ -465,7 +469,7 @@ def show_upload(conn, cur):
                             "attribute": "thickness",
                             "type": "fixed",
                             "formula_used": str(row["thickness"]),
-                            "quantity": clean_int(row["quantity"]),
+                            "quantity": clean_quantity(row["quantity"]),
                         })
 
         df = pd.DataFrame(expanded_rows)
@@ -595,6 +599,8 @@ def show_upload(conn, cur):
 
         conn.commit()
         progress.progress(20)
+
+        ensure_quantity_text_column()
 
         rule_rows = (
             df[
@@ -1087,9 +1093,13 @@ Updated Formula Rules:
                 st.warning("Component and attribute required")
             else:
                 try:
+                    ensure_quantity_text_column()
+
                     formula_value = normalize_formula(
                         add_formula_used
                     )
+
+                    quantity_value = clean_quantity(add_quantity)
 
                     cur.execute("""
                         INSERT INTO product_component_rules
@@ -1112,7 +1122,7 @@ Updated Formula Rules:
                             AND attribute = %s
                             AND type = %s
                             AND COALESCE(formula_used, '') = COALESCE(%s, '')
-                            AND COALESCE(quantity, -1) = COALESCE(%s, -1)
+                            AND COALESCE(quantity::TEXT, '') = COALESCE(%s::TEXT, '')
                         )
                     """, (
                         product_cat,
@@ -1121,14 +1131,14 @@ Updated Formula Rules:
                         add_attribute.strip(),
                         add_rule_type,
                         formula_value,
-                        int(add_quantity),
+                        quantity_value,
                         product_cat,
                         product_code,
                         add_component.strip(),
                         add_attribute.strip(),
                         add_rule_type,
                         formula_value,
-                        int(add_quantity)
+                        quantity_value
                     ))
 
                     inserted_rule = cur.rowcount
@@ -1307,19 +1317,21 @@ Existing Preserved:
                 key=f"edit_formula_{selected_ctid}"
             )
 
-            edit_quantity = st.number_input(
+            edit_quantity = st.text_input(
                 "Quantity",
-                min_value=0,
-                value=int(selected_rule[5] or 0),
-                step=1,
+                value=str(selected_rule[5] or ""),
                 key=f"edit_quantity_{selected_ctid}"
             )
 
             if st.button("✅ Update Formula Rule"):
                 try:
+                    ensure_quantity_text_column()
+
                     new_formula = normalize_formula(
                         edit_formula
                     )
+
+                    new_quantity = clean_quantity(edit_quantity)
 
                     cur.execute("""
                         UPDATE product_component_rules
@@ -1335,7 +1347,7 @@ Existing Preserved:
                         edit_attribute.strip(),
                         edit_type,
                         new_formula,
-                        int(edit_quantity),
+                        new_quantity,
                         selected_ctid
                     ))
 
