@@ -72,7 +72,7 @@ def show_upload(conn, cur):
     def split_product_codes(value):
         value = clean_text(value)
 
-       if not value:
+        if not value:
            return []
 
        return [value]
