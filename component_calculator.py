@@ -24,6 +24,7 @@ VARIABLE_ALIASES = {
     "extra_width": "architrave_extra_width",
     "frame_h_thk": "frame_horizontal_thickness",
     "frame_v_thk": "frame_vertical_thickness",
+    "shuter": "shutter",
 }
 
 
@@ -31,6 +32,10 @@ DEFAULT_VALUES = {
     "opening_length": 0.0,
     "opening_width": 0.0,
     "opening_height": 0.0,
+    "opening_length_1": 0.0,
+    "opening_height_1": 0.0,
+    "opening_length_2": 0.0,
+    "opening_height_2": 0.0,
     "vertical_clearance": 0.0,
     "horizontal_clearance": 0.0,
     "architrave_extra_length": 0.0,
@@ -72,13 +77,16 @@ FIXED_COMPONENT_DIMENSIONS = {
 
 
 def slug(value):
-    return (
+    value = (
         str(value or "")
         .strip()
         .lower()
         .replace(" ", "_")
         .replace("-", "_")
     )
+    value = value.replace("shuter", "shutter")
+    value = re.sub(r"_+", "_", value)
+    return value.strip("_")
 
 
 def product_needs_lh_rh(product_cat):
@@ -86,17 +94,27 @@ def product_needs_lh_rh(product_cat):
         "door",
         "doorwindow",
         "door_window",
-        "door_window",
     ]
 
 
 def normalize_variable(var_name):
     var_name = str(var_name or "").strip()
+    var_name = var_name.replace("Shuter", "Shutter").replace("shuter", "shutter")
+
     var_name = re.sub(
-        r"\b([A-Za-z_][A-Za-z0-9_]*)-(\d+)\b",
+        r"(?<=[A-Za-z])-(?=[A-Za-z])",
+        "_",
+        var_name
+    )
+
+    var_name = re.sub(
+        r"\b([A-Za-z_][A-Za-z0-9_]*[A-Za-z_])-(\d+)\b",
         r"\1_\2",
         var_name
     )
+
+    var_name = re.sub(r"_+", "_", var_name)
+
     return VARIABLE_ALIASES.get(var_name, var_name)
 
 
@@ -109,12 +127,21 @@ def normalize_formula(formula):
             formula = right.strip()
 
     formula = formula.replace("–", "-").replace("—", "-")
+    formula = formula.replace("Shuter", "Shutter").replace("shuter", "shutter")
 
     formula = re.sub(
-        r"\b([A-Za-z_][A-Za-z0-9_]*)-(\d+)\b",
+        r"(?<=[A-Za-z])-(?=[A-Za-z])",
+        "_",
+        formula
+    )
+
+    formula = re.sub(
+        r"\b([A-Za-z_][A-Za-z0-9_]*[A-Za-z_])-(\d+)\b",
         r"\1_\2",
         formula
     )
+
+    formula = re.sub(r"_+", "_", formula)
 
     for old_var, new_var in VARIABLE_ALIASES.items():
         formula = re.sub(rf"\b{old_var}\b", new_var, formula)
@@ -401,6 +428,11 @@ def store_calculated_value(variables, component, attribute, value):
     if attribute_key in ["length", "width", "height", "thickness"]:
         keys.add(f"{component_key}_{attribute_key}")
 
+    for key in list(keys):
+        parts = key.split("_")
+        if len(parts) > 2:
+            keys.add("_".join(parts[:-1]))
+
     for key in keys:
         variables[key] = numeric_value
 
@@ -455,6 +487,22 @@ def calculated_variable_names(rules):
     return names
 
 
+def is_calculated_variable(variable, calculated_names):
+    variable = normalize_variable(variable)
+
+    if variable in calculated_names:
+        return True
+
+    for calculated_name in calculated_names:
+        if variable.startswith(f"{calculated_name}_"):
+            suffix = variable.replace(f"{calculated_name}_", "", 1)
+
+            if suffix.replace("_", "").isdigit():
+                return True
+
+    return False
+
+
 def product_input_variables(rules):
     all_formula_vars = set()
 
@@ -467,14 +515,77 @@ def product_input_variables(rules):
 
     calculated_names = calculated_variable_names(rules)
 
-    return sorted([
+    user_inputs = [
         variable
         for variable in all_formula_vars
-        if variable not in calculated_names
+        if not is_calculated_variable(variable, calculated_names)
+    ]
+
+    allowed_opening_inputs = [
+        "opening_length_1",
+        "opening_height_1",
+        "opening_length_2",
+        "opening_height_2",
+    ]
+
+    opening_inputs = [
+        key
+        for key in allowed_opening_inputs
+        if key in user_inputs
+    ]
+
+    remaining_inputs = [
+        key
+        for key in user_inputs
+        if key not in allowed_opening_inputs
+        and not re.search(r"_(?:\d+_)+\d+$", key)
+    ]
+
+    if opening_inputs:
+        return opening_inputs + sorted(remaining_inputs)
+
+    preferred_order = [
+        "opening_length",
+        "opening_height",
+        "opening_width",
+        "vertical_clearance",
+        "horizontal_clearance",
+        "architrave_extra_length",
+        "architrave_extra_width",
+        "frame_horizontal_thickness",
+        "frame_vertical_thickness",
+        "shutter_thickness",
+    ]
+
+    ordered_inputs = [
+        key
+        for key in preferred_order
+        if key in user_inputs
+    ]
+
+    remaining_inputs = sorted([
+        key
+        for key in remaining_inputs
+        if key not in preferred_order
     ])
+
+    return ordered_inputs + remaining_inputs
 
 
 def input_label(variable):
+    label_map = {
+        "opening_length_1": "Opening Length 1",
+        "opening_height_1": "Opening Height 1",
+        "opening_length_2": "Opening Length 2",
+        "opening_height_2": "Opening Height 2",
+        "opening_length": "Opening Length",
+        "opening_height": "Opening Height",
+        "opening_width": "Opening Width",
+    }
+
+    if variable in label_map:
+        return label_map[variable]
+
     return str(variable or "").replace("_", " ").title()
 
 
