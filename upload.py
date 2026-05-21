@@ -24,6 +24,14 @@ def show_upload(conn, cur):
         except Exception:
             return None
 
+    def clean_number(value):
+        if pd.isna(value) or value == "":
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
+
     def normalize_columns(df):
         df.columns = (
             df.columns
@@ -73,6 +81,32 @@ def show_upload(conn, cur):
                 left
             ):
                 formula = right.strip()
+
+        formula = formula.replace("–", "-").replace("—", "-")
+
+        formula = re.sub(
+            r"\b([A-Za-z_][A-Za-z0-9_]*)-(\d+)\b",
+            r"\1_\2",
+            formula
+        )
+
+        formula = re.sub(
+            r"\b([A-Za-z_][A-Za-z0-9_]*?)_?height_(\d+)\b",
+            r"\1_height_\2",
+            formula
+        )
+
+        formula = re.sub(
+            r"\b([A-Za-z_][A-Za-z0-9_]*?)_?length_(\d+)\b",
+            r"\1_length_\2",
+            formula
+        )
+
+        formula = re.sub(
+            r"\b([A-Za-z_][A-Za-z0-9_]*?)_?width_(\d+)\b",
+            r"\1_width_\2",
+            formula
+        )
 
         return formula
 
@@ -251,59 +285,98 @@ def show_upload(conn, cur):
             "quantity": "quantity"
         })
 
-        required_cols = [
+        base_required_cols = [
             "product_cat",
             "product_code",
             "component",
-            "attribute",
-            "type",
             "formula_used",
             "quantity"
         ]
 
-        missing_cols = [
+        missing_base_cols = [
             col
-            for col in required_cols
+            for col in base_required_cols
             if col not in df.columns
         ]
 
-        if missing_cols:
+        if missing_base_cols:
             raise Exception(
-                "Missing column: " + ", ".join(missing_cols)
+                "Missing column: " + ", ".join(missing_base_cols)
             )
 
-        df = df[required_cols]
+        has_attribute_type = (
+            "attribute" in df.columns
+            and "type" in df.columns
+        )
+
+        has_width = "width" in df.columns
+        has_thickness = "thickness" in df.columns
+
+        keep_cols = [
+            "product_cat",
+            "product_code",
+            "component",
+            "formula_used",
+            "quantity"
+        ]
+
+        if has_attribute_type:
+            keep_cols.extend(["attribute", "type"])
+
+        if has_width:
+            keep_cols.append("width")
+
+        if has_thickness:
+            keep_cols.append("thickness")
+
+        df = df[keep_cols]
         df["_row_order"] = range(len(df))
 
         df["product_cat"] = df["product_cat"].ffill()
         df["product_code"] = df["product_code"].ffill()
         df["component"] = df["component"].ffill()
 
-        df = df.dropna(
-            subset=[
-                "product_cat",
-                "product_code",
-                "component",
-                "attribute",
-                "type"
-            ]
-        )
+        drop_subset = [
+            "product_cat",
+            "product_code",
+            "component"
+        ]
+
+        if has_attribute_type:
+            drop_subset.extend(["attribute", "type"])
+
+        df = df.dropna(subset=drop_subset)
 
         df["product_cat"] = df["product_cat"].apply(clean_text)
         df["product_code"] = df["product_code"].apply(clean_text)
         df["component"] = df["component"].apply(clean_text)
-        df["attribute"] = df["attribute"].apply(clean_text)
-        df["type"] = df["type"].apply(normalize_rule_type)
         df["formula_used"] = df["formula_used"].apply(normalize_formula)
         df["quantity"] = df["quantity"].apply(clean_int)
 
-        df = df[
+        if has_attribute_type:
+            df["attribute"] = df["attribute"].apply(clean_text)
+            df["type"] = df["type"].apply(normalize_rule_type)
+
+        if has_width:
+            df["width"] = df["width"].apply(clean_number)
+
+        if has_thickness:
+            df["thickness"] = df["thickness"].apply(clean_number)
+
+        filter_condition = (
             (df["product_cat"] != "")
             & (df["product_code"] != "")
             & (df["component"] != "")
-            & (df["attribute"] != "")
-            & (df["type"] != "")
-        ]
+        )
+
+        if has_attribute_type:
+            filter_condition = (
+                filter_condition
+                & (df["attribute"] != "")
+                & (df["type"] != "")
+            )
+
+        df = df[filter_condition]
 
         df["quantity"] = (
             df.sort_values("_row_order")
@@ -326,17 +399,74 @@ def show_upload(conn, cur):
         expanded_rows = []
 
         for _, row in df.sort_values("_row_order").iterrows():
+            product_codes = split_product_codes(row["product_code"])
 
-            for product_code in split_product_codes(row["product_code"]):
-                expanded_rows.append({
-                    "product_cat": row["product_cat"],
-                    "product_code": product_code,
-                    "component": row["component"],
-                    "attribute": row["attribute"],
-                    "type": row["type"],
-                    "formula_used": row["formula_used"],
-                    "quantity": clean_int(row["quantity"]),
-                })
+            for product_code in product_codes:
+                if has_attribute_type:
+                    expanded_rows.append({
+                        "product_cat": row["product_cat"],
+                        "product_code": product_code,
+                        "component": row["component"],
+                        "attribute": row["attribute"],
+                        "type": row["type"],
+                        "formula_used": row["formula_used"],
+                        "quantity": clean_int(row["quantity"]),
+                    })
+
+                    if has_width and row.get("width") is not None:
+                        expanded_rows.append({
+                            "product_cat": row["product_cat"],
+                            "product_code": product_code,
+                            "component": row["component"],
+                            "attribute": "width",
+                            "type": "fixed",
+                            "formula_used": str(row["width"]),
+                            "quantity": clean_int(row["quantity"]),
+                        })
+
+                    if has_thickness and row.get("thickness") is not None:
+                        expanded_rows.append({
+                            "product_cat": row["product_cat"],
+                            "product_code": product_code,
+                            "component": row["component"],
+                            "attribute": "thickness",
+                            "type": "fixed",
+                            "formula_used": str(row["thickness"]),
+                            "quantity": clean_int(row["quantity"]),
+                        })
+
+                else:
+                    expanded_rows.append({
+                        "product_cat": row["product_cat"],
+                        "product_code": product_code,
+                        "component": row["component"],
+                        "attribute": "length",
+                        "type": "formula",
+                        "formula_used": row["formula_used"],
+                        "quantity": clean_int(row["quantity"]),
+                    })
+
+                    if has_width and row.get("width") is not None:
+                        expanded_rows.append({
+                            "product_cat": row["product_cat"],
+                            "product_code": product_code,
+                            "component": row["component"],
+                            "attribute": "width",
+                            "type": "fixed",
+                            "formula_used": str(row["width"]),
+                            "quantity": clean_int(row["quantity"]),
+                        })
+
+                    if has_thickness and row.get("thickness") is not None:
+                        expanded_rows.append({
+                            "product_cat": row["product_cat"],
+                            "product_code": product_code,
+                            "component": row["component"],
+                            "attribute": "thickness",
+                            "type": "fixed",
+                            "formula_used": str(row["thickness"]),
+                            "quantity": clean_int(row["quantity"]),
+                        })
 
         df = pd.DataFrame(expanded_rows)
 
@@ -563,7 +693,7 @@ def show_upload(conn, cur):
 🚀 Upload Completed Successfully
 
 ⏱ Time: {total_time} sec
-📄 Excel Rows: {total_rows}
+📄 Excel Rows After Rule Expansion: {total_rows}
 
 📊 Summary:
 - Product Types: {len(product_rows)}
