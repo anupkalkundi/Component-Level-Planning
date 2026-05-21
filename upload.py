@@ -76,7 +76,15 @@ def show_upload(conn, cur):
             return []
 
         return [value]
-    
+
+    def combined_product_code(product_cat, product_code):
+        product_cat_key = clean_text(product_cat).lower().replace(" ", "_")
+
+        if product_cat_key in ["french_window", "frenchwindow"]:
+            return "FW3-L-FD-Sliding-C20 + Fixed-FW3-C20"
+
+        return clean_text(product_code)
+
     def normalize_formula(formula):
         formula = clean_text(formula)
 
@@ -95,14 +103,14 @@ def show_upload(conn, cur):
         formula = formula.replace("–", "-").replace("—", "-")
 
         formula = re.sub(
-            r"(?<=[A-Za-z_])-(?=[A-Za-z_])",
-            "_",
+            r"\b([A-Za-z_][A-Za-z0-9_]*[A-Za-z_])-(\d+)\b",
+            r"\1_\2",
             formula
         )
 
         formula = re.sub(
-            r"\b([A-Za-z_][A-Za-z0-9_]*)-(\d+)\b",
-            r"\1_\2",
+            r"(?<=[A-Za-z])-(?=[A-Za-z])",
+            "_",
             formula
         )
 
@@ -459,10 +467,15 @@ def show_upload(conn, cur):
             product_codes = split_product_codes(row["product_code"])
 
             for product_code in product_codes:
+                final_product_code = combined_product_code(
+                    row["product_cat"],
+                    product_code
+                )
+
                 if has_attribute_type:
                     expanded_rows.append({
                         "product_cat": row["product_cat"],
-                        "product_code": product_code,
+                        "product_code": final_product_code,
                         "component": row["component"],
                         "attribute": row["attribute"],
                         "type": row["type"],
@@ -473,7 +486,7 @@ def show_upload(conn, cur):
                     if has_width and row.get("width") is not None:
                         expanded_rows.append({
                             "product_cat": row["product_cat"],
-                            "product_code": product_code,
+                            "product_code": final_product_code,
                             "component": row["component"],
                             "attribute": "width",
                             "type": "fixed",
@@ -484,7 +497,7 @@ def show_upload(conn, cur):
                     if has_thickness and row.get("thickness") is not None:
                         expanded_rows.append({
                             "product_cat": row["product_cat"],
-                            "product_code": product_code,
+                            "product_code": final_product_code,
                             "component": row["component"],
                             "attribute": "thickness",
                             "type": "fixed",
@@ -495,7 +508,7 @@ def show_upload(conn, cur):
                 else:
                     expanded_rows.append({
                         "product_cat": row["product_cat"],
-                        "product_code": product_code,
+                        "product_code": final_product_code,
                         "component": row["component"],
                         "attribute": "length",
                         "type": "formula",
@@ -506,7 +519,7 @@ def show_upload(conn, cur):
                     if has_width and row.get("width") is not None:
                         expanded_rows.append({
                             "product_cat": row["product_cat"],
-                            "product_code": product_code,
+                            "product_code": final_product_code,
                             "component": row["component"],
                             "attribute": "width",
                             "type": "fixed",
@@ -517,7 +530,7 @@ def show_upload(conn, cur):
                     if has_thickness and row.get("thickness") is not None:
                         expanded_rows.append({
                             "product_cat": row["product_cat"],
-                            "product_code": product_code,
+                            "product_code": final_product_code,
                             "component": row["component"],
                             "attribute": "thickness",
                             "type": "fixed",
