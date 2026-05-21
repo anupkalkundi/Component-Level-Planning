@@ -73,9 +73,9 @@ def show_upload(conn, cur):
         value = clean_text(value)
 
         if not value:
-           return []
+            return []
 
-       return [value]
+        return [value]
     
     def normalize_formula(formula):
         formula = clean_text(formula)
