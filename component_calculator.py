@@ -289,8 +289,7 @@ def normalize_formula_for_eval(formula, rules=None, variables=None):
     if not formula:
         return ""
 
-    # Handle formulas like:
-    # width = opening_width - 50
+    # handle assignment formulas
     if "=" in formula:
 
         left, right = formula.split("=", 1)
@@ -298,24 +297,18 @@ def normalize_formula_for_eval(formula, rules=None, variables=None):
         if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_ ]*\s*", left):
             formula = right.strip()
 
-    # normalize unicode dashes
+    # normalize unicode dashes only
     formula = (
         formula
         .replace("–", "-")
         .replace("—", "-")
     )
 
-    # normalize spacing around operators
-    formula = re.sub(
-        r"\s*([\+\-\*/\(\)])\s*",
-        r" \1 ",
-        formula
-    )
+    # DO NOT replace operators
+    # DO NOT replace minus with underscore
+    # DO NOT slug entire formulas
 
-    # collapse extra spaces
-    formula = re.sub(r"\s+", " ", formula).strip()
-
-    # Apply aliases
+    # apply aliases only
     for old_var, new_var in VARIABLE_ALIASES.items():
 
         formula = re.sub(
@@ -324,7 +317,11 @@ def normalize_formula_for_eval(formula, rules=None, variables=None):
             formula
         )
 
+    # cleanup spaces
+    formula = re.sub(r"\s+", " ", formula).strip()
+
     return formula
+    
 def extract_formula_variables(formula, rules=None, variables=None):
     formula = normalize_formula_for_eval(formula, rules or [], variables or {})
 
