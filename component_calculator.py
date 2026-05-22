@@ -645,13 +645,18 @@ def store_calculated_value(variables, component, attribute, value):
 
     numeric_value = float(value)
 
-    # always store full key
+    # store full attribute key
     full_key = f"{component_key}_{attribute_key}"
     variables[full_key] = numeric_value
 
-    # ONLY length becomes primary component variable
-    if attribute_key == "length":
-        variables[component_key] = numeric_value
+    # IMPORTANT FIX:
+    # store direct component variable also
+    # because formulas reference:
+    # glass_shutter_width_top_1
+    # sliding_shutter_height_1
+    # etc
+
+    variables[component_key] = numeric_value
 
 
 def calculate_cft(length, width, thickness, quantity, round_value=True):
