@@ -124,7 +124,7 @@ def normalize_variable(var_name):
 
 
 def clean_number(value):
-    if value in [None, ""]:
+    if value in [None, "", "None"]:
         return None
     try:
         if pd.isna(value):
@@ -675,7 +675,7 @@ def store_calculated_value(variables, component, attribute, value):
     full_key = f"{component_key}_{attribute_key}"
     variables[full_key] = numeric_value
 
-    if attribute_key == "length":
+    if attribute_key == "length" or attribute_key == "height":
         variables[component_key] = numeric_value
     elif component_key not in variables:
         variables[component_key] = numeric_value
@@ -757,10 +757,6 @@ def reset_generated_state_if_product_changed(state_key):
 
 
 def dynamic_resolve_and_evaluate(rule, all_rules, house_variables, previous_qty, product_qty_multiplier, rules_by_key, tracking_cache, active_path=None):
-    """
-    Dynamically maps execution loops out of order for window rules recursively 
-    using topology constraints to bypass cross-dependency issues safely.
-    """
     if active_path is None:
         active_path = set()
 
@@ -793,6 +789,11 @@ def dynamic_resolve_and_evaluate(rule, all_rules, house_variables, previous_qty,
             elif f"{dep}_length" in rules_by_key and f"{dep}_length" not in tracking_cache:
                 dynamic_resolve_and_evaluate(
                     rules_by_key[f"{dep}_length"], all_rules, house_variables, previous_qty,
+                    product_qty_multiplier, rules_by_key, tracking_cache, active_path
+                )
+            elif f"{dep}_height" in rules_by_key and f"{dep}_height" not in tracking_cache:
+                dynamic_resolve_and_evaluate(
+                    rules_by_key[f"{dep}_height"], all_rules, house_variables, previous_qty,
                     product_qty_multiplier, rules_by_key, tracking_cache, active_path
                 )
 
@@ -1068,7 +1069,7 @@ def show_component_calculator(conn, cur):
                             "attributes": {}
                         }
 
-                    component_tracking_map[tracking_key]["attributes"][attribute] = {
+                    component_tracking_map[tracking_key]["attributes"][attribute.lower()] = {
                         "type": "formula" if rule_type == "fomula" else rule_type,
                         "formula": normalized_formula,
                         "value": float(value),
@@ -1079,37 +1080,18 @@ def show_component_calculator(conn, cur):
                     errors_found = True
                     st.error(f"{house_number} - {component} / {attribute}: {e}")
 
+            # Pull explicit user configurations cleanly without loss of tracking keys
             for row in component_tracking_map.values():
-                for attribute in ["width", "thickness"]:
-                    if attribute in row["attributes"]:
-                        continue
-
-                    value = get_dimension_value(row["component"], attribute, variables, rules)
-                    if value is None:
-                        continue
-
-                    fallback_qty = base_quantity(row["component"], None, previous_qty, house_variables)
-                    row["attributes"][attribute] = {
-                        "type": "dimension",
-                        "formula": "",
-                        "value": float(value),
-                        "base_quantity": fallback_qty,
-                    }
-
-                    calculated_rules.append({
-                        "House Number": house_number,
-                        "Product": product_code,
-                        "Component": row["component"],
-                        "Attribute": attribute,
-                        "Type": "dimension",
-                        "Formula": "",
-                        "Value": value,
-                        "Base Quantity": fallback_qty,
-                        "Total Quantity": row["quantity"],
-                        "LH Quantity": lh_quantity,
-                        "RH Quantity": rh_quantity,
-                        "Quantity": product_qty_multiplier,
-                    })
+                for attr_type in ["width", "thickness"]:
+                    # Fetch dimensions safely from config fallback
+                    dim_val = get_dimension_value(row["component"], attr_type, house_variables, rules)
+                    if dim_val is not None:
+                        row["attributes"][attr_type] = {
+                            "type": "dimension",
+                            "formula": "",
+                            "value": float(dim_val),
+                            "base_quantity": row["quantity"] / product_qty_multiplier
+                        }
 
             preview_rows.extend(calculated_rules)
             tracking_rows.extend(component_tracking_map.values())
@@ -1120,84 +1102,70 @@ def show_component_calculator(conn, cur):
         st.session_state["generated_lh_quantity"] = total_lh_quantity
         st.session_state["generated_rh_quantity"] = total_rh_quantity
         st.session_state["generated_total_quantity"] = total_product_quantity
-        st.session_state["generated_shutter_thickness"] = variables.get("shutter_thickness", "")
 
     if "generated_component_preview" in st.session_state:
         st.subheader("Generated Components")
 
-        generated_lh = st.session_state.get("generated_lh_quantity", 0)
-        generated_rh = st.session_state.get("generated_rh_quantity", 0)
-        generated_total = st.session_state.get("generated_total_quantity", 0)
-
-        if uses_orientation:
-            st.info(f"Total LH Quantity: {generated_lh} | Total RH Quantity: {generated_rh} | Total Quantity: {generated_total}")
-        else:
-            st.info(f"Total Quantity: {generated_total}")
-
         df_preview_raw = pd.DataFrame(st.session_state["generated_component_preview"])
         house_rows = []
 
-        group_cols = ["House Number", "Product", "Component", "Total Quantity", "LH Quantity", "RH Quantity", "Quantity"]
+        tracking_rows = st.session_state.get("generated_component_tracking_rows", [])
 
-        for _, group_df in df_preview_raw.groupby(group_cols, dropna=False, sort=False):
-            first_row = group_df.iloc[0].to_dict()
-            values = {}
+        for row in tracking_rows:
+            attrs = row["attributes"]
+            
+            # Map values dynamically based on what was computed or fallback configurations
+            length_val = attrs.get("length", attrs.get("height", {})) .get("value", "")
+            width_val = attrs.get("width", {}).get("value", "")
+            thickness_val = attrs.get("thickness", {}).get("value", "")
 
-            for _, row in group_df.iterrows():
-                values[str(row["Attribute"]).strip().lower()] = row["Value"]
+            # Fix up zero/empty states using standard database rules parameters safely
+            if width_val == "":
+                width_val = float(get_dimension_value(row["component"], "width", variables, rules) or 0)
+            if thickness_val == "":
+                thickness_val = float(get_dimension_value(row["component"], "thickness", variables, rules) or 0)
 
-            length_value = values.get("length", "")
-            width_value = values.get("width", "")
-            thickness_value = values.get("thickness", values.get("height", ""))
-
-            cft_value = calculate_cft(length_value, width_value, thickness_value, first_row["Total Quantity"], round_value=True)
+            cft_value = calculate_cft(length_val, width_val, thickness_val, row["quantity"], round_value=True)
 
             row_data = {
-                "House Number": first_row["House Number"],
-                "Product": first_row["Product"],
-                "Component": first_row["Component"],
-                "Length": length_value,
-                "Width": width_value,
-                "Thickness": thickness_value,
+                "House Number": row["house_number"],
+                "Product": row["product_code"],
+                "Component": row["component"],
+                "Length": length_val,
+                "Width": width_val,
+                "Thickness": thickness_val,
+                "Total Quantity": row["quantity"],
+                "CFT": cft_value,
             }
 
             if uses_orientation:
-                row_data["LH Quantity"] = first_row["LH Quantity"]
-                row_data["RH Quantity"] = first_row["RH Quantity"]
+                row_data["LH Quantity"] = row["lh_quantity"]
+                row_data["RH Quantity"] = row["rh_quantity"]
             else:
-                row_data["Quantity"] = first_row["Quantity"]
+                row_data["Quantity"] = row["product_quantity"]
 
-            row_data["Total Quantity"] = first_row["Total Quantity"]
-            row_data["CFT"] = cft_value
             house_rows.append(row_data)
 
-        total_cft = sum(clean_number(row.get("CFT")) or 0 for row in house_rows)
-
-        total_row = {
-            "House Number": "",
-            "Product": "",
-            "Component": "CFT Total",
-            "Length": "",
-            "Width": "",
-            "Thickness": "",
-        }
-
-        if uses_orientation:
-            total_row["LH Quantity"] = ""
-            total_row["RH Quantity"] = ""
-        else:
-            total_row["Quantity"] = ""
-
-        total_row["Total Quantity"] = ""
-        total_row["CFT"] = Decimal(str(round(total_cft, 2)))
-        house_rows.append(total_row)
+        if house_rows:
+            total_cft = sum(clean_number(r.get("CFT")) or 0 for r in house_rows)
+            total_row = {
+                "House Number": "", "Product": "", "Component": "CFT Total",
+                "Length": "", "Width": "", "Thickness": "", "Total Quantity": ""
+            }
+            if uses_orientation:
+                total_row["LH Quantity"] = ""
+                total_row["RH Quantity"] = ""
+            else:
+                total_row["Quantity"] = ""
+            total_row["CFT"] = Decimal(str(round(total_cft, 2)))
+            house_rows.append(total_row)
 
         df_preview = pd.DataFrame(house_rows)
         st.dataframe(df_preview, use_container_width=True, hide_index=True)
 
         errors_found = st.session_state.get("generated_component_errors", False)
 
-        if errors_found or df_preview_raw["Value"].isna().any():
+        if errors_found:
             st.warning("Some components did not calculate. Fix formulas before confirming.")
         else:
             st.success("All component formulas calculated successfully")
@@ -1205,11 +1173,9 @@ def show_component_calculator(conn, cur):
         st.markdown("---")
 
         if st.button("Confirm Components and Send to Tracking", type="primary", key=f"confirm_components_{state_key}"):
-            if errors_found or df_preview_raw["Value"].isna().any():
+            if errors_found:
                 st.warning("Please fix formula errors before sending to tracking.")
                 return
-
-            tracking_rows = st.session_state.get("generated_component_tracking_rows", [])
 
             if not tracking_rows:
                 st.warning("No generated components to save.")
@@ -1219,46 +1185,48 @@ def show_component_calculator(conn, cur):
                 generated_insert_rows = []
                 tracking_insert_rows = []
 
-                for row in tracking_rows:
-                    attrs = row["attributes"]
-                    length_value = ""
-                    width_value = None
-                    thickness_value = None
-
-                    if "length" in attrs:
-                        length_value = str(attrs["length"]["value"])
-                    if "width" in attrs:
-                        width_value = attrs["width"]["value"]
-                    if "thickness" in attrs:
-                        thickness_value = attrs["thickness"]["value"]
-
-                    cft_value = calculate_cft(length_value, width_value, thickness_value, row["quantity"], round_value=True)
+                for row in house_rows:
+                    if row["Component"] == "CFT Total":
+                        continue
 
                     generated_insert_rows.append((
-                        row["project_name"],
-                        row["unit_type"],
-                        row["house_number"],
-                        row["product_cat"],
-                        row["product_code"],
-                        row["component"],
+                        project_name,
+                        unit_type,
+                        row["House Number"],
+                        product_cat,
+                        row["Product"],
+                        row["Component"],
                         "combined",
-                        length_value,
-                        width_value,
-                        thickness_value,
-                        cft_value,
-                        row["orientation"],
-                        row["quantity"],
+                        str(row["Length"]),
+                        row["Width"],
+                        row["Thickness"],
+                        row["CFT"],
+                        "",
+                        row["Total Quantity"],
                     ))
 
                     tracking_insert_rows.append((
-                        row["project_name"],
-                        row["house_number"],
-                        row["component"],
-                        row["quantity"],
+                        project_name,
+                        row["House Number"],
+                        row["Component"],
+                        row["Total Quantity"],
                         0,
-                        row["quantity"],
+                        row["Total Quantity"],
                         "Pending",
                     ))
+
+                # Wipe instances clean to prevent tracking duplication crashes
+                for row in house_rows:
+                    if row["Component"] == "CFT Total":
+                        continue
+                    cur.execute(
+                        "DELETE FROM generated_components WHERE project_name=%s AND house_number=%s AND component=%s",
+                        (project_name, row["House Number"], row["Component"])
+                    )
+                    cur.execute(
+                        "DELETE FROM tracking WHERE project_name=%s AND house_number=%s AND component=%s",
+                        (project_name, row["House Number"], row["Component"])
+                    )
 
                 execute_values(
                     cur,
@@ -1282,7 +1250,8 @@ def show_component_calculator(conn, cur):
                 )
 
                 conn.commit()
-                st.success(f"{len(generated_insert_rows)} component(s) sent to tracking successfully")
+                st.success(f"{len(generated_insert_rows)} component(s) sent to tracking successfully!")
+                st.session_state.pop("generated_component_preview", None)
 
             except Exception as e:
                 conn.rollback()
