@@ -67,8 +67,8 @@ COMPONENT_INPUT_KEYS = {
 }
 
 
-# Only door/common fixed dimensions stay here.
-# FW fixed width/thickness must come from uploaded Excel/database, not code.
+# Keep only common/door fixed values here.
+# FW fixed width/thickness comes from uploaded rules table.
 FIXED_COMPONENT_DIMENSIONS = {
     "architrave_vertical": {"width": Decimal("40"), "thickness": Decimal("12")},
     "architrave_horizontal": {"width": Decimal("40"), "thickness": Decimal("12")},
@@ -116,25 +116,6 @@ def normalize_variable(var_name):
     return VARIABLE_ALIASES.get(var_name, var_name)
 
 
-def safe_execute(conn, cur, query, params=None):
-    try:
-        cur.execute(query, params or ())
-    except Exception as e:
-        conn.rollback()
-        raise e
-
-
-def get_distinct_values(conn, cur, table, column, where_sql="", params=None):
-    query = f"""
-        SELECT DISTINCT {column}
-        FROM {table}
-        {where_sql}
-        ORDER BY {column}
-    """
-    safe_execute(conn, cur, query, params)
-    return [r[0] for r in cur.fetchall() if r[0] is not None]
-
-
 def clean_number(value):
     if value in [None, ""]:
         return None
@@ -154,21 +135,170 @@ def clean_int(value):
     return int(float(number))
 
 
-def known_formula_keys(rules, variables):
-    keys = set(DEFAULT_VALUES.keys())
-    keys.update(variables.keys())
+def decimal_or_none(value):
+    number = clean_number(value)
 
-    for component, attribute, _, _, _ in rules:
+    if number is None:
+        return None
+
+    return Decimal(str(round(number, 2)))
+
+
+def safe_execute(conn, cur, query, params=None):
+    try:
+        cur.execute(query, params or ())
+    except Exception as e:
+        conn.rollback()
+        raise e
+
+
+def get_distinct_values(conn, cur, table, column, where_sql="", params=None):
+    query = f"""
+        SELECT DISTINCT {column}
+        FROM {table}
+        {where_sql}
+        ORDER BY {column}
+    """
+    safe_execute(conn, cur, query, params)
+    return [r[0] for r in cur.fetchall() if r[0] is not None]
+
+
+def get_table_columns(conn, cur, table):
+    safe_execute(conn, cur, """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = %s
+    """, (table,))
+    return {row[0] for row in cur.fetchall()}
+
+
+def first_existing_column(columns, candidates):
+    for candidate in candidates:
+        if candidate in columns:
+            return candidate
+    return None
+
+
+def rule_value(rule, key, default=None):
+    return rule.get(key, default)
+
+
+def normalize_rule(row):
+    return {
+        "product_code": row.get("product_code"),
+        "component": row.get("component"),
+        "attribute": row.get("attribute"),
+        "rule_type": row.get("type"),
+        "formula": row.get("formula_used"),
+        "quantity": row.get("quantity"),
+        "fixed_width": row.get("fixed_width"),
+        "fixed_thickness": row.get("fixed_thickness"),
+    }
+
+
+def load_product_rules(conn, cur, product_cat, selected_product_code):
+    columns = get_table_columns(conn, cur, "product_component_rules")
+
+    width_col = first_existing_column(columns, [
+        "width",
+        "component_width",
+        "fixed_width",
+    ])
+
+    thickness_col = first_existing_column(columns, [
+        "thickness",
+        "component_thickness",
+        "fixed_thickness",
+    ])
+
+    select_cols = [
+        "product_code",
+        "component",
+        "attribute",
+        "type",
+        "formula_used",
+        "quantity",
+    ]
+
+    if width_col:
+        select_cols.append(f"{width_col} AS fixed_width")
+    else:
+        select_cols.append("NULL AS fixed_width")
+
+    if thickness_col:
+        select_cols.append(f"{thickness_col} AS fixed_thickness")
+    else:
+        select_cols.append("NULL AS fixed_thickness")
+
+    query = f"""
+        SELECT {", ".join(select_cols)}
+        FROM product_component_rules
+        WHERE product_cat = %s
+    """
+
+    safe_execute(conn, cur, query, (product_cat,))
+
+    col_names = [desc[0] for desc in cur.description]
+    rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
+
+    rules = []
+
+    for row in rows:
+        if selected_product_code in split_product_codes(row.get("product_code")):
+            rules.append(normalize_rule(row))
+
+    return rules
+
+
+def build_product_options(products):
+    options = []
+
+    for product_cat, product_code in products:
+        for single_code in split_product_codes(product_code):
+            options.append(f"{product_cat} | {single_code}")
+
+    return sorted(set(options))
+
+
+def known_formula_aliases(rules):
+    aliases = {}
+
+    for rule in rules:
+        component = str(rule_value(rule, "component", "")).strip()
+        attribute = str(rule_value(rule, "attribute", "")).strip()
+
         component_key = slug(component)
         attribute_key = slug(attribute)
+        full_key = f"{component_key}_{attribute_key}"
 
-        keys.add(component_key)
-        keys.add(f"{component_key}_{attribute_key}")
+        component_text = component.lower()
+        full_text = f"{component} {attribute}".strip().lower()
 
-    return keys
+        aliases[component_text] = component_key
+        aliases[component_text.replace(" ", "_")] = component_key
+
+        aliases[full_text] = full_key
+        aliases[full_text.replace(" ", "_")] = full_key
+
+        # Uploaded typo support only for component variable names.
+        aliases[component_key.replace("shutter", "shuter")] = component_key
+        aliases[full_key.replace("shutter", "shuter")] = full_key
+
+        # Uploaded typo like glass_shutter-width_top_1.
+        if "_width_" in full_key:
+            aliases[full_key.replace("_width_", "-width_")] = full_key
+            aliases[full_key.replace("shutter", "shuter").replace("_width_", "-width_")] = full_key
+
+        if "_length_" in full_key:
+            aliases[full_key.replace("_length_", "-length_")] = full_key
+            aliases[full_key.replace("shutter", "shuter").replace("_length_", "-length_")] = full_key
+
+    return aliases
 
 
-def normalize_formula_for_eval(formula, rules, variables):
+def normalize_formula_for_eval(formula, rules):
+    # IMPORTANT: never slug the whole formula.
+    # Operators like + - * / must stay untouched.
     formula = str(formula or "").strip()
 
     if "=" in formula:
@@ -179,22 +309,7 @@ def normalize_formula_for_eval(formula, rules, variables):
     for old_var, new_var in VARIABLE_ALIASES.items():
         formula = re.sub(rf"\b{old_var}\b", new_var, formula, flags=re.IGNORECASE)
 
-    known_keys = known_formula_keys(rules, variables)
-
-    aliases = {}
-
-    for key in known_keys:
-        aliases[key.replace("_", " ")] = key
-        aliases[key.replace("shutter", "shuter")] = key
-
-        # Fix uploaded typos like glass_shutter-width_top_1 without touching real subtraction.
-        if "_width_" in key:
-            aliases[key.replace("_width_", "-width_")] = key
-            aliases[key.replace("shutter", "shuter").replace("_width_", "-width_")] = key
-
-        if "_length_" in key:
-            aliases[key.replace("_length_", "-length_")] = key
-            aliases[key.replace("shutter", "shuter").replace("_length_", "-length_")] = key
+    aliases = known_formula_aliases(rules)
 
     for bad_key, good_key in sorted(aliases.items(), key=lambda item: len(item[0]), reverse=True):
         if not bad_key:
@@ -210,28 +325,26 @@ def normalize_formula_for_eval(formula, rules, variables):
     return formula
 
 
-def extract_formula_variables(formula, rules=None, variables=None):
+def extract_formula_variables(formula, rules=None):
     rules = rules or []
-    variables = variables or {}
-
-    formula = normalize_formula_for_eval(formula, rules, variables)
+    formula = normalize_formula_for_eval(formula, rules)
 
     if not formula:
         return []
 
     ignore_words = {"abs", "min", "max", "round", "float", "int", "Decimal"}
 
-    variables_found = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", formula)
+    found = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", formula)
 
     return sorted({
         normalize_variable(v)
-        for v in variables_found
+        for v in found
         if v not in ignore_words
     })
 
 
 def evaluate_formula(formula, variables, rules):
-    formula = normalize_formula_for_eval(formula, rules, variables)
+    formula = normalize_formula_for_eval(formula, rules)
 
     if not formula:
         raise FormulaError("Formula empty")
@@ -328,8 +441,25 @@ def fixed_dimension_value(component, attribute):
     return FIXED_COMPONENT_DIMENSIONS.get(slug(component), {}).get(slug(attribute))
 
 
-def has_fixed_dimension(component, attribute):
-    return fixed_dimension_value(component, attribute) is not None
+def uploaded_dimension_value(rules, component, attribute):
+    component_key = slug(component)
+    attribute_key = slug(attribute)
+
+    for rule in rules:
+        if slug(rule_value(rule, "component")) != component_key:
+            continue
+
+        if attribute_key == "width":
+            value = decimal_or_none(rule_value(rule, "fixed_width"))
+            if value is not None:
+                return value
+
+        if attribute_key == "thickness":
+            value = decimal_or_none(rule_value(rule, "fixed_thickness"))
+            if value is not None:
+                return value
+
+    return None
 
 
 def existing_component_input_key(component, attribute):
@@ -343,26 +473,40 @@ def existing_component_input_key(component, attribute):
     return key if key in COMPONENT_INPUT_KEYS else None
 
 
-def needs_manual_dimension(rule):
-    component, attribute, rule_type, formula, _ = rule
+def has_fixed_or_uploaded_dimension(rules, component, attribute):
+    if fixed_dimension_value(component, attribute) is not None:
+        return True
+
+    if uploaded_dimension_value(rules, component, attribute) is not None:
+        return True
+
+    return False
+
+
+def needs_manual_dimension(rule, rules):
+    component = rule_value(rule, "component")
+    attribute = rule_value(rule, "attribute")
+    rule_type = str(rule_value(rule, "rule_type") or "").strip().lower()
+    formula = str(rule_value(rule, "formula") or "").strip()
     attribute_key = slug(attribute)
-    rule_type = str(rule_type or "").strip().lower()
 
     if existing_component_input_key(component, attribute):
         return False
 
     return (
         attribute_key in ["width", "thickness"]
-        and not has_fixed_dimension(component, attribute)
+        and not has_fixed_or_uploaded_dimension(rules, component, attribute)
         and rule_type not in ["formula", "fomula"]
-        and str(formula or "").strip() == ""
+        and formula == ""
     )
 
 
 def selected_component_manual_dimensions(rules):
     component_attributes = {}
 
-    for component, attribute, _, _, _ in rules:
+    for rule in rules:
+        component = rule_value(rule, "component")
+        attribute = rule_value(rule, "attribute")
         component_key = slug(component)
         attribute_key = slug(attribute)
 
@@ -381,7 +525,7 @@ def selected_component_manual_dimensions(rules):
         attributes = component_data["attributes"]
 
         for attribute in ["width", "thickness"]:
-            if has_fixed_dimension(component, attribute):
+            if has_fixed_or_uploaded_dimension(rules, component, attribute):
                 continue
 
             if existing_component_input_key(component, attribute):
@@ -391,9 +535,8 @@ def selected_component_manual_dimensions(rules):
                 manual_dimensions.append((component, attribute))
 
     for rule in rules:
-        if needs_manual_dimension(rule):
-            component, attribute, _, _, _ = rule
-            item = (component, attribute)
+        if needs_manual_dimension(rule, rules):
+            item = (rule_value(rule, "component"), rule_value(rule, "attribute"))
 
             if item not in manual_dimensions:
                 manual_dimensions.append(item)
@@ -404,9 +547,9 @@ def selected_component_manual_dimensions(rules):
 def calculated_variable_keys(rules):
     keys = set()
 
-    for component, attribute, _, _, _ in rules:
-        component_key = slug(component)
-        attribute_key = slug(attribute)
+    for rule in rules:
+        component_key = slug(rule_value(rule, "component"))
+        attribute_key = slug(rule_value(rule, "attribute"))
 
         keys.add(component_key)
         keys.add(f"{component_key}_{attribute_key}")
@@ -438,11 +581,13 @@ def product_input_keys(product_cat, product_code, rules):
         ]
 
     formula_vars = set()
-    temp_variables = dict(DEFAULT_VALUES)
 
-    for _, _, rule_type, formula, _ in rules:
-        if str(rule_type or "").strip().lower() in ["formula", "fomula"]:
-            formula_vars.update(extract_formula_variables(formula, rules, temp_variables))
+    for rule in rules:
+        rule_type = str(rule_value(rule, "rule_type") or "").strip().lower()
+        formula = rule_value(rule, "formula")
+
+        if rule_type in ["formula", "fomula"]:
+            formula_vars.update(extract_formula_variables(formula, rules))
 
     formula_vars -= calculated_variable_keys(rules)
     formula_vars.discard("quantity")
@@ -455,9 +600,37 @@ def product_input_keys(product_cat, product_code, rules):
     return sorted(formula_vars)
 
 
-def apply_fixed_component_value(component, attribute, value):
+def get_dimension_value(component, attribute, variables, rules):
     fixed = fixed_dimension_value(component, attribute)
-    return fixed if fixed is not None else value
+
+    if fixed is not None:
+        return fixed
+
+    uploaded = uploaded_dimension_value(rules, component, attribute)
+
+    if uploaded is not None:
+        return uploaded
+
+    input_key = existing_component_input_key(component, attribute)
+
+    if input_key:
+        return Decimal(str(round(float(variables.get(input_key, 0.0)), 2)))
+
+    return Decimal(str(round(float(variables.get(manual_dimension_key(component, attribute), 0.0)), 2)))
+
+
+def apply_fixed_or_uploaded_component_value(component, attribute, value, rules):
+    fixed = fixed_dimension_value(component, attribute)
+
+    if fixed is not None:
+        return fixed
+
+    uploaded = uploaded_dimension_value(rules, component, attribute)
+
+    if uploaded is not None and slug(attribute) in ["width", "thickness"]:
+        return uploaded
+
+    return value
 
 
 def store_calculated_value(variables, component, attribute, value):
@@ -468,26 +641,11 @@ def store_calculated_value(variables, component, attribute, value):
     attribute_key = slug(attribute)
     numeric_value = float(value)
 
-    # Important: both are needed.
-    # Example:
-    # Sliding Shutter Height_1 length -> sliding_shutter_height_1
-    # Frame Vertical length -> frame_vertical_length
+    # Critical for dependencies:
+    # Frame Vertical / length -> frame_vertical and frame_vertical_length
+    # Sliding Shutter Height_1 / length -> sliding_shutter_height_1 and sliding_shutter_height_1_length
     variables[component_key] = numeric_value
     variables[f"{component_key}_{attribute_key}"] = numeric_value
-
-
-def get_dimension_value(component, attribute, variables):
-    fixed = fixed_dimension_value(component, attribute)
-
-    if fixed is not None:
-        return fixed
-
-    input_key = existing_component_input_key(component, attribute)
-
-    if input_key:
-        return Decimal(str(round(float(variables.get(input_key, 0.0)), 2)))
-
-    return Decimal(str(round(float(variables.get(manual_dimension_key(component, attribute), 0.0)), 2)))
 
 
 def calculate_cft(length, width, thickness, quantity, round_value=True):
@@ -548,41 +706,6 @@ def ensure_generated_components_table(conn, cur):
     """)
 
     conn.commit()
-
-
-def build_product_options(products):
-    options = []
-
-    for product_cat, product_code in products:
-        for single_code in split_product_codes(product_code):
-            options.append(f"{product_cat} | {single_code}")
-
-    return sorted(set(options))
-
-
-def load_product_rules(conn, cur, product_cat, selected_product_code):
-    safe_execute(conn, cur, """
-        SELECT
-            product_code,
-            component,
-            attribute,
-            type,
-            formula_used,
-            quantity
-        FROM product_component_rules
-        WHERE product_cat = %s
-    """, (product_cat,))
-
-    rows = cur.fetchall()
-    rules = []
-
-    for row in rows:
-        db_product_code = row[0]
-
-        if selected_product_code in split_product_codes(db_product_code):
-            rules.append(row[1:])
-
-    return rules
 
 
 def reset_generated_state_if_product_changed(state_key):
@@ -832,11 +955,11 @@ def show_component_calculator(conn, cur):
                 next_pending = []
 
                 for rule in pending_rules:
-                    component = str(rule[0]).strip()
-                    attribute = str(rule[1]).strip()
-                    rule_type = str(rule[2] or "").strip().lower()
-                    formula = rule[3]
-                    quantity = rule[4]
+                    component = str(rule_value(rule, "component")).strip()
+                    attribute = str(rule_value(rule, "attribute")).strip()
+                    rule_type = str(rule_value(rule, "rule_type") or "").strip().lower()
+                    formula = rule_value(rule, "formula")
+                    quantity = rule_value(rule, "quantity")
 
                     component_qty = base_quantity(component, quantity, previous_qty, house_variables)
                     total_quantity = int(component_qty * product_qty_multiplier)
@@ -845,8 +968,8 @@ def show_component_calculator(conn, cur):
                         if rule_type in ["formula", "fomula"]:
                             value = evaluate_formula(formula, house_variables, rules)
 
-                        elif needs_manual_dimension(rule):
-                            value = get_dimension_value(component, attribute, variables)
+                        elif needs_manual_dimension(rule, rules):
+                            value = get_dimension_value(component, attribute, variables, rules)
 
                         else:
                             value = fixed_value(formula, quantity)
@@ -854,17 +977,22 @@ def show_component_calculator(conn, cur):
                         if value is None:
                             value = Decimal("0")
 
-                        value = apply_fixed_component_value(component, attribute, value)
+                        value = apply_fixed_or_uploaded_component_value(
+                            component,
+                            attribute,
+                            value,
+                            rules
+                        )
 
-                        store_calculated_value(house_variables, component, attribute, value)
+                        store_calculated_value(
+                            house_variables,
+                            component,
+                            attribute,
+                            value
+                        )
 
                         previous_qty[slug(component)] = component_qty
-
-                        normalized_formula = normalize_formula_for_eval(
-                            formula,
-                            rules,
-                            house_variables
-                        )
+                        normalized_formula = normalize_formula_for_eval(formula, rules)
 
                         calculated_rules.append({
                             "House Number": house_number,
@@ -926,11 +1054,11 @@ def show_component_calculator(conn, cur):
 
                 if not progressed:
                     for rule in next_pending:
-                        component = str(rule[0]).strip()
-                        attribute = str(rule[1]).strip()
-                        formula = rule[3]
-                        quantity = rule[4]
-                        rule_type = str(rule[2] or "").strip().lower()
+                        component = str(rule_value(rule, "component")).strip()
+                        attribute = str(rule_value(rule, "attribute")).strip()
+                        formula = rule_value(rule, "formula")
+                        quantity = rule_value(rule, "quantity")
+                        rule_type = str(rule_value(rule, "rule_type") or "").strip().lower()
                         component_qty = base_quantity(component, quantity, previous_qty, house_variables)
 
                         preview_rows.append({
@@ -939,7 +1067,7 @@ def show_component_calculator(conn, cur):
                             "Component": component,
                             "Attribute": attribute,
                             "Type": "formula" if rule_type == "fomula" else rule_type,
-                            "Formula": normalize_formula_for_eval(formula, rules, house_variables),
+                            "Formula": normalize_formula_for_eval(formula, rules),
                             "Value": None,
                             "Base Quantity": component_qty,
                             "Total Quantity": int(component_qty * product_qty_multiplier),
@@ -948,13 +1076,7 @@ def show_component_calculator(conn, cur):
                             "Quantity": product_qty_multiplier,
                         })
 
-                        missing = ", ".join(
-                            extract_formula_variables(
-                                formula,
-                                rules,
-                                house_variables
-                            )
-                        )
+                        missing = ", ".join(extract_formula_variables(formula, rules))
 
                         st.error(
                             f"{house_number} - {component} / {attribute}: Missing dependency. Required: {missing}"
@@ -970,8 +1092,19 @@ def show_component_calculator(conn, cur):
                     if attribute in row["attributes"]:
                         continue
 
-                    value = get_dimension_value(row["component"], attribute, variables)
-                    fallback_qty = base_quantity(row["component"], None, previous_qty, house_variables)
+                    value = get_dimension_value(
+                        row["component"],
+                        attribute,
+                        variables,
+                        rules
+                    )
+
+                    fallback_qty = base_quantity(
+                        row["component"],
+                        None,
+                        previous_qty,
+                        house_variables
+                    )
 
                     row["attributes"][attribute] = {
                         "type": "manual",
@@ -1045,18 +1178,6 @@ def show_component_calculator(conn, cur):
             length_value = values.get("length", "")
             width_value = values.get("width", "")
             thickness_value = values.get("thickness", values.get("height", ""))
-
-            fixed_width = fixed_dimension_value(component_name, "width")
-            fixed_thickness = fixed_dimension_value(component_name, "thickness")
-
-            if fixed_width is not None:
-                width_value = fixed_width
-
-            if fixed_thickness is not None:
-                thickness_value = fixed_thickness
-
-            if component_name == "flush shutter":
-                thickness_value = st.session_state.get("generated_shutter_thickness", "")
 
             cft_value = calculate_cft(
                 length_value,
@@ -1152,18 +1273,6 @@ def show_component_calculator(conn, cur):
 
                     if "thickness" in attrs:
                         thickness_value = attrs["thickness"]["value"]
-
-                    fixed_width = fixed_dimension_value(row["component"], "width")
-                    fixed_thickness = fixed_dimension_value(row["component"], "thickness")
-
-                    if fixed_width is not None:
-                        width_value = fixed_width
-
-                    if fixed_thickness is not None:
-                        thickness_value = fixed_thickness
-
-                    if str(row["component"]).strip().lower() == "flush shutter":
-                        thickness_value = st.session_state.get("generated_shutter_thickness", None)
 
                     cft_value = calculate_cft(
                         length_value,
