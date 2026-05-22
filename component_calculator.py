@@ -70,8 +70,6 @@ COMPONENT_INPUT_KEYS = {
 }
 
 
-# Only common door dimensions kept in code.
-# French Window width/thickness comes from uploaded Excel columns.
 FIXED_COMPONENT_DIMENSIONS = {
     "architrave_vertical": {"width": Decimal("40"), "thickness": Decimal("12")},
     "architrave_horizontal": {"width": Decimal("40"), "thickness": Decimal("12")},
@@ -97,11 +95,7 @@ def label_from_key(key):
 
 
 def split_product_codes(product_code):
-    return [
-        code.strip()
-        for code in str(product_code or "").split(",")
-        if code.strip()
-    ]
+    return [code.strip() for code in str(product_code or "").split(",") if code.strip()]
 
 
 def is_door_product(product_cat, product_code):
@@ -141,19 +135,15 @@ def clean_number(value):
 
 def clean_int(value):
     number = clean_number(value)
-
     if number is None:
         return 0
-
     return int(float(number))
 
 
 def decimal_or_none(value):
     number = clean_number(value)
-
     if number is None:
         return None
-
     return Decimal(str(round(number, 2)))
 
 
@@ -182,7 +172,6 @@ def get_table_columns(conn, cur, table):
         FROM information_schema.columns
         WHERE table_name = %s
     """, (table,))
-
     return {row[0] for row in cur.fetchall()}
 
 
@@ -197,53 +186,24 @@ def rule_value(rule, key, default=None):
     return rule.get(key, default)
 
 
-def normalize_rule(row):
-    return {
-        "product_code": row.get("product_code"),
-        "component": row.get("component"),
-        "attribute": row.get("attribute"),
-        "rule_type": row.get("type"),
-        "formula": row.get("formula_used"),
-        "quantity": row.get("quantity"),
-        "fixed_width": row.get("fixed_width"),
-        "fixed_thickness": row.get("fixed_thickness"),
-    }
-
-
 def load_product_rules(conn, cur, product_cat, selected_product_code):
     columns = get_table_columns(conn, cur, "product_component_rules")
 
-    width_col = first_existing_column(columns, [
-        "width",
-        "Width",
-        "component_width",
-        "fixed_width",
-    ])
-
-    thickness_col = first_existing_column(columns, [
-        "thickness",
-        "Thickness",
-        "component_thickness",
-        "fixed_thickness",
-    ])
-
-    quantity_col = first_existing_column(columns, [
-        "quantity",
-        "quanity",
-        "Quanity",
-        "Quantity",
-    ]) or "quantity"
-
-    formula_col = first_existing_column(columns, [
-        "formula_used",
-        "Formula_Used",
-    ]) or "formula_used"
+    product_code_col = first_existing_column(columns, ["product_code", "productcode"])
+    product_cat_col = first_existing_column(columns, ["product_cat", "productcat"])
+    component_col = first_existing_column(columns, ["component", "components"])
+    attribute_col = first_existing_column(columns, ["attribute"])
+    type_col = first_existing_column(columns, ["type"])
+    formula_col = first_existing_column(columns, ["formula_used", "formula"])
+    quantity_col = first_existing_column(columns, ["quantity", "quanity"])
+    width_col = first_existing_column(columns, ["width", "fixed_width", "component_width"])
+    thickness_col = first_existing_column(columns, ["thickness", "fixed_thickness", "component_thickness"])
 
     select_cols = [
-        "product_code",
-        "component",
-        "attribute",
-        "type",
+        f"{product_code_col} AS product_code",
+        f"{component_col} AS component",
+        f"{attribute_col} AS attribute",
+        f"{type_col} AS type",
         f"{formula_col} AS formula_used",
         f"{quantity_col} AS quantity",
     ]
@@ -261,20 +221,10 @@ def load_product_rules(conn, cur, product_cat, selected_product_code):
     query = f"""
         SELECT {", ".join(select_cols)}
         FROM product_component_rules
-        WHERE product_cat = %s
-        ORDER BY id
+        WHERE {product_cat_col} = %s
     """
 
-    try:
-        safe_execute(conn, cur, query, (product_cat,))
-    except Exception:
-        query = f"""
-            SELECT {", ".join(select_cols)}
-            FROM product_component_rules
-            WHERE product_cat = %s
-        """
-        safe_execute(conn, cur, query, (product_cat,))
-
+    safe_execute(conn, cur, query, (product_cat,))
     col_names = [desc[0] for desc in cur.description]
     rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
 
@@ -292,18 +242,25 @@ def load_product_rules(conn, cur, product_cat, selected_product_code):
         row["product_code"] = db_product_code
 
         if selected_product_code in split_product_codes(db_product_code):
-            rules.append(normalize_rule(row))
+            rules.append({
+                "product_code": row.get("product_code"),
+                "component": row.get("component"),
+                "attribute": row.get("attribute"),
+                "rule_type": row.get("type"),
+                "formula": row.get("formula_used"),
+                "quantity": row.get("quantity"),
+                "fixed_width": row.get("fixed_width"),
+                "fixed_thickness": row.get("fixed_thickness"),
+            })
 
     return rules
 
 
 def build_product_options(products):
     options = []
-
     for product_cat, product_code in products:
         for single_code in split_product_codes(product_code):
             options.append(f"{product_cat} | {single_code}")
-
     return sorted(set(options))
 
 
@@ -341,7 +298,6 @@ def known_formula_aliases(rules):
 
         aliases[component_text] = component_key
         aliases[component_text.replace(" ", "_")] = component_key
-
         aliases[full_text] = full_key
         aliases[full_text.replace(" ", "_")] = full_key
 
@@ -368,10 +324,6 @@ def known_formula_aliases(rules):
 
 
 def normalize_formula_for_eval(formula, rules):
-    # IMPORTANT:
-    # Do not slug full formula.
-    # Do not replace "-" with "_".
-    # Operators must remain operators.
     formula = str(formula or "").strip()
 
     if not formula:
@@ -385,12 +337,7 @@ def normalize_formula_for_eval(formula, rules):
     formula = fix_unmatched_parentheses(formula)
 
     for old_var, new_var in VARIABLE_ALIASES.items():
-        formula = re.sub(
-            rf"\b{old_var}\b",
-            new_var,
-            formula,
-            flags=re.IGNORECASE
-        )
+        formula = re.sub(rf"\b{old_var}\b", new_var, formula, flags=re.IGNORECASE)
 
     aliases = known_formula_aliases(rules)
 
@@ -415,15 +362,7 @@ def extract_formula_variables(formula, rules=None):
     if not formula:
         return []
 
-    ignore_words = {
-        "abs",
-        "min",
-        "max",
-        "round",
-        "float",
-        "int",
-        "Decimal",
-    }
+    ignore_words = {"abs", "min", "max", "round", "float", "int", "Decimal"}
 
     found = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", formula)
 
@@ -565,13 +504,10 @@ def existing_component_input_key(component, attribute):
 
 
 def has_fixed_or_uploaded_dimension(rules, component, attribute):
-    if fixed_dimension_value(component, attribute) is not None:
-        return True
-
-    if uploaded_dimension_value(rules, component, attribute) is not None:
-        return True
-
-    return False
+    return (
+        fixed_dimension_value(component, attribute) is not None
+        or uploaded_dimension_value(rules, component, attribute) is not None
+    )
 
 
 def needs_manual_dimension(rule, rules):
@@ -1041,6 +977,7 @@ def show_component_calculator(conn, cur):
             while pending_rules:
                 progressed = False
                 next_pending = []
+                dependency_errors = []
 
                 for rule in pending_rules:
                     component = str(rule_value(rule, "component")).strip()
@@ -1132,6 +1069,7 @@ def show_component_calculator(conn, cur):
                     except FormulaError as e:
                         if "Missing variable" in str(e):
                             next_pending.append(rule)
+                            dependency_errors.append((rule, str(e)))
                         else:
                             errors_found = True
                             st.error(f"{house_number} - {component} / {attribute}: {e}")
@@ -1141,7 +1079,7 @@ def show_component_calculator(conn, cur):
                         st.error(f"{house_number} - {component} / {attribute}: {e}")
 
                 if not progressed:
-                    for rule in next_pending:
+                    for rule, _ in dependency_errors:
                         component = str(rule_value(rule, "component")).strip()
                         attribute = str(rule_value(rule, "attribute")).strip()
                         formula = rule_value(rule, "formula")
