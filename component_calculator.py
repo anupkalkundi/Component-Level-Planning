@@ -58,10 +58,10 @@ DEFAULT_VALUES = {
     "architrave_extra_width": 0.0,
     "frame_horizontal_thickness": 0.0,
     "frame_vertical_thickness": 0.0,
+    "shutter_thickness": 0.0,
     "lh_quantity": 0.0,
     "rh_quantity": 0.0,
     "quantity": 0.0,
-    "shutter_thickness": 0.0,
     "allowance": 0.0,
     "groove": 0.0,
     "cut": 0.0,
@@ -109,17 +109,11 @@ def split_product_codes(product_code):
 
 def is_door_product(product_cat, product_code):
     product_key = slug(f"{product_cat} {product_code}")
-    return (
-        "door" in product_key
-        or "doowindow" in product_key
-        or "door_window" in product_key
-        or "doo_window" in product_key
-    )
+    return "door" in product_key or "doowindow" in product_key or "door_window" in product_key
 
 
 def is_fw3_product(product_cat, product_code):
-    product_key = slug(f"{product_cat} {product_code}")
-    return "fw3" in product_key
+    return "fw3" in slug(f"{product_cat} {product_code}")
 
 
 def normalize_variable(var_name):
@@ -128,12 +122,13 @@ def normalize_variable(var_name):
     return VARIABLE_ALIASES.get(var_name, var_name)
 
 
-def normalize_formula(formula):
+def clean_formula_text(formula):
     formula = str(formula or "").strip()
 
     if "=" in formula:
-        _, formula = formula.split("=", 1)
-        formula = formula.strip()
+        left, right = formula.split("=", 1)
+        if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_ ]*\s*", left):
+            formula = right.strip()
 
     for old_text, new_var in sorted(DISPLAY_VARIABLE_ALIASES.items(), key=lambda x: len(x[0]), reverse=True):
         formula = re.sub(rf"\b{re.escape(old_text)}\b", new_var, formula, flags=re.IGNORECASE)
@@ -142,6 +137,76 @@ def normalize_formula(formula):
         formula = re.sub(rf"\b{old_var}\b", new_var, formula)
 
     return formula
+
+
+def split_joined_variable(token, known_vars):
+    if token in known_vars:
+        return [token]
+
+    parts = []
+    remaining = token
+
+    while remaining:
+        matches = [
+            var for var in known_vars
+            if remaining == var or remaining.startswith(f"{var}_")
+        ]
+
+        if not matches:
+            return None
+
+        best = max(matches, key=len)
+        parts.append(best)
+
+        if remaining == best:
+            remaining = ""
+        else:
+            remaining = remaining[len(best) + 1:]
+
+    return parts
+
+
+def joined_parts_to_expression(parts):
+    if len(parts) <= 1:
+        return parts[0] if parts else ""
+
+    first = parts[0]
+    rest = parts[1:]
+
+    if first in ["opening_length", "opening_width"]:
+        return " + ".join(parts)
+
+    if first in ["frame_vertical_length", "frame_horizontal_length", "opening_length_1", "opening_length_2"]:
+        return first + " - " + " - ".join(rest)
+
+    return " + ".join(parts)
+
+
+def normalize_formula(formula, known_vars=None):
+    formula = clean_formula_text(formula)
+
+    if not known_vars:
+        return formula
+
+    known_vars = {normalize_variable(v) for v in known_vars}
+
+    def replace_token(match):
+        token = normalize_variable(match.group(0))
+
+        if token in {"abs", "min", "max", "round", "float", "int", "Decimal"}:
+            return token
+
+        if token in known_vars:
+            return token
+
+        parts = split_joined_variable(token, known_vars)
+
+        if parts:
+            return f"({joined_parts_to_expression(parts)})"
+
+        return token
+
+    return re.sub(r"\b[A-Za-z_][A-Za-z0-9_]*\b", replace_token, formula)
 
 
 def safe_execute(conn, cur, query, params=None):
@@ -163,8 +228,27 @@ def get_distinct_values(conn, cur, table, column, where_sql="", params=None):
     return [r[0] for r in cur.fetchall() if r[0] is not None]
 
 
-def extract_formula_variables(formula):
-    formula = normalize_formula(formula)
+def clean_number(value):
+    if value in [None, ""]:
+        return None
+
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def clean_int(value):
+    number = clean_number(value)
+
+    if number is None or pd.isna(number):
+        return 0
+
+    return int(float(number))
+
+
+def extract_formula_variables(formula, known_vars=None):
+    formula = normalize_formula(formula, known_vars)
 
     if not formula:
         return []
@@ -181,7 +265,7 @@ def extract_formula_variables(formula):
 
 
 def evaluate_formula(formula, variables):
-    formula = normalize_formula(formula)
+    formula = normalize_formula(formula, variables.keys())
 
     if not formula:
         raise FormulaError("Formula empty")
@@ -208,25 +292,6 @@ def evaluate_formula(formula, variables):
         raise FormulaError(str(e))
 
 
-def clean_number(value):
-    if value in [None, ""]:
-        return None
-
-    try:
-        return float(value)
-    except Exception:
-        return None
-
-
-def clean_int(value):
-    number = clean_number(value)
-
-    if number is None or pd.isna(number):
-        return 0
-
-    return int(float(number))
-
-
 def fixed_value(formula, quantity):
     formula_num = clean_number(formula)
 
@@ -250,8 +315,10 @@ def base_quantity(component, quantity, previous_qty):
     if component_key == "architrave_vertical":
         return 4
 
-    if quantity not in [None, ""]:
-        return int(float(quantity))
+    quantity_num = clean_number(quantity)
+
+    if quantity_num is not None:
+        return int(quantity_num)
 
     return int(previous_qty.get(component_key, 1))
 
@@ -269,7 +336,13 @@ def has_fixed_dimension(component, attribute):
 
 
 def existing_component_input_key(component, attribute):
-    key = f"{slug(component)}_{slug(attribute)}"
+    component_key = slug(component)
+    attribute_key = slug(attribute)
+
+    if component_key == "flush_shutter" and attribute_key == "thickness":
+        return "shutter_thickness"
+
+    key = f"{component_key}_{attribute_key}"
     return key if key in COMPONENT_INPUT_KEYS else None
 
 
@@ -286,7 +359,7 @@ def needs_manual_dimension(rule):
     component, attribute, rule_type, formula, _ = rule
     attribute_key = slug(attribute)
     rule_type = str(rule_type or "").strip().lower()
-    formula = normalize_formula(formula)
+    formula = clean_formula_text(formula)
 
     if existing_component_input_key(component, attribute):
         return False
@@ -376,11 +449,12 @@ def product_input_keys(product_cat, product_code, rules):
             "opening_length_2",
         ]
 
+    known_vars = set(DEFAULT_VALUES.keys()) | calculated_variable_keys(rules)
     formula_vars = set()
 
     for _, _, rule_type, formula, _ in rules:
         if str(rule_type or "").strip().lower() in ["formula", "fomula"]:
-            formula_vars.update(extract_formula_variables(formula))
+            formula_vars.update(extract_formula_variables(formula, known_vars))
 
     formula_vars -= calculated_variable_keys(rules)
     formula_vars.discard("quantity")
@@ -398,16 +472,8 @@ def store_calculated_value(variables, component, attribute, value):
     attribute_key = slug(attribute)
     numeric_value = float(value)
 
-    keys = {
-        component_key,
-        f"{component_key}_{attribute_key}",
-    }
-
-    if attribute_key in ["length", "width", "height", "thickness"]:
-        keys.add(f"{component_key}_{attribute_key}")
-
-    for key in keys:
-        variables[key] = numeric_value
+    variables[component_key] = numeric_value
+    variables[f"{component_key}_{attribute_key}"] = numeric_value
 
 
 def get_dimension_value(component, attribute, variables):
@@ -616,8 +682,6 @@ def show_component_calculator(conn, cur):
 
     st.markdown("---")
 
-    house_qty_map = {}
-
     if uses_orientation:
         st.subheader("House Wise LH / RH Quantity")
 
@@ -687,12 +751,12 @@ def show_component_calculator(conn, cur):
     st.subheader("User Based Data")
 
     variables = {}
-    dynamic_input_keys = product_input_keys(product_cat, product_code, rules)
+    input_keys = product_input_keys(product_cat, product_code, rules)
 
-    if dynamic_input_keys:
+    if input_keys:
         input_cols = st.columns(4)
 
-        for idx, key in enumerate(dynamic_input_keys):
+        for idx, key in enumerate(input_keys):
             with input_cols[idx % 4]:
                 variables[key] = st.number_input(
                     label_from_key(key),
@@ -728,10 +792,6 @@ def show_component_calculator(conn, cur):
 
         if not selected_houses:
             st.warning("Please select at least one house number.")
-            return
-
-        if not house_qty_map:
-            st.warning("Please enter house-wise quantity.")
             return
 
         preview_rows = []
@@ -796,7 +856,7 @@ def show_component_calculator(conn, cur):
                             "Component": component,
                             "Attribute": attribute,
                             "Type": "formula" if rule_type == "fomula" else rule_type,
-                            "Formula": normalize_formula(formula),
+                            "Formula": normalize_formula(formula, house_variables.keys()),
                             "Value": value,
                             "Base Quantity": component_qty,
                             "Total Quantity": total_quantity,
@@ -825,7 +885,7 @@ def show_component_calculator(conn, cur):
 
                         component_tracking_map[tracking_key]["attributes"][attribute] = {
                             "type": "formula" if rule_type == "fomula" else rule_type,
-                            "formula": normalize_formula(formula),
+                            "formula": normalize_formula(formula, house_variables.keys()),
                             "value": float(value),
                             "base_quantity": component_qty,
                         }
@@ -858,7 +918,7 @@ def show_component_calculator(conn, cur):
                             "Component": component,
                             "Attribute": attribute,
                             "Type": "formula" if rule_type == "fomula" else rule_type,
-                            "Formula": normalize_formula(formula),
+                            "Formula": normalize_formula(formula, house_variables.keys()),
                             "Value": None,
                             "Base Quantity": component_qty,
                             "Total Quantity": int(component_qty * product_qty_multiplier),
@@ -867,7 +927,7 @@ def show_component_calculator(conn, cur):
                             "Quantity": product_qty_multiplier,
                         })
 
-                        missing = ", ".join(extract_formula_variables(formula))
+                        missing = ", ".join(extract_formula_variables(formula, house_variables.keys()))
 
                         st.error(
                             f"{house_number} - {component} / {attribute}: Missing dependency. Required: {missing}"
@@ -1040,7 +1100,6 @@ def show_component_calculator(conn, cur):
             type="primary",
             key=f"confirm_components_{state_key}"
         ):
-
             if errors_found or df_preview_raw["Value"].isna().any():
                 st.warning("Please fix formula errors before sending to tracking.")
                 return
