@@ -355,6 +355,9 @@ def repair_joined_formula_tokens(formula, rules, variables=None):
         token = match.group(0)
         normalized_token = normalize_variable(token)
 
+        if normalized_token in known_keys:
+            return normalized_token
+
         parts = split_joined_formula_token(normalized_token, known_keys)
 
         if not parts:
@@ -387,6 +390,25 @@ def normalize_formula_for_eval(formula, rules, variables=None):
             formula,
             flags=re.IGNORECASE
         )
+
+    known_keys = formula_known_keys(rules, variables)
+
+    for key in known_keys:
+        if "_width_" in key:
+            formula = re.sub(
+                rf"\b{re.escape(key.replace('_width_', '-width_'))}\b",
+                key,
+                formula,
+                flags=re.IGNORECASE
+            )
+
+        if "_length_" in key:
+            formula = re.sub(
+                rf"\b{re.escape(key.replace('_length_', '-length_'))}\b",
+                key,
+                formula,
+                flags=re.IGNORECASE
+            )
 
     formula = repair_joined_formula_tokens(formula, rules, variables)
 
@@ -573,7 +595,46 @@ def needs_manual_dimension(rule, rules):
 
 
 def selected_component_manual_dimensions(rules):
-    return []
+    component_attributes = {}
+
+    for rule in rules:
+        component = rule_value(rule, "component")
+        attribute = rule_value(rule, "attribute")
+        component_key = slug(component)
+        attribute_key = slug(attribute)
+
+        if component_key not in component_attributes:
+            component_attributes[component_key] = {
+                "component": component,
+                "attributes": set(),
+            }
+
+        component_attributes[component_key]["attributes"].add(attribute_key)
+
+    manual_dimensions = []
+
+    for component_data in component_attributes.values():
+        component = component_data["component"]
+        attributes = component_data["attributes"]
+
+        for attribute in ["width", "thickness"]:
+            if has_fixed_or_uploaded_dimension(rules, component, attribute):
+                continue
+
+            if existing_component_input_key(component, attribute):
+                continue
+
+            if attribute not in attributes:
+                manual_dimensions.append((component, attribute))
+
+    for rule in rules:
+        if needs_manual_dimension(rule, rules):
+            item = (rule_value(rule, "component"), rule_value(rule, "attribute"))
+
+            if item not in manual_dimensions:
+                manual_dimensions.append(item)
+
+    return manual_dimensions
 
 
 def calculated_variable_keys(rules):
@@ -749,6 +810,16 @@ def ensure_generated_components_table(conn, cur):
     """)
 
     conn.commit()
+
+
+def build_product_options(products):
+    options = []
+
+    for product_cat, product_code in products:
+        for single_code in split_product_codes(product_code):
+            options.append(f"{product_cat} | {single_code}")
+
+    return sorted(set(options))
 
 
 def reset_generated_state_if_product_changed(state_key):
@@ -941,6 +1012,24 @@ def show_component_calculator(conn, cur):
                     )
     else:
         st.info("No user based inputs required for this product.")
+
+    manual_dimensions = selected_component_manual_dimensions(rules)
+
+    if manual_dimensions:
+        st.markdown("#### Manual Component Dimensions")
+        manual_cols = st.columns(4)
+
+        for idx, (component, attribute) in enumerate(manual_dimensions):
+            key = manual_dimension_key(component, attribute)
+
+            with manual_cols[idx % 4]:
+                variables[key] = st.number_input(
+                    f"{component} {attribute}".title(),
+                    value=0.0,
+                    step=1.0,
+                    format="%.2f",
+                    key=f"manual_input_{state_key}_{slug(component)}_{slug(attribute)}_{idx}"
+                )
 
     st.markdown("---")
 
