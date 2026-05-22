@@ -25,10 +25,13 @@ VARIABLE_ALIASES = {
     "extra_width": "architrave_extra_width",
     "frame_h_thk": "frame_horizontal_thickness",
     "frame_v_thk": "frame_vertical_thickness",
+    "frame_horizontal_thicknes": "frame_horizontal_thickness",
     "glass_shuter_width_top_1": "glass_shutter_width_top_1",
     "glass_shuter_width_top_2": "glass_shutter_width_top_2",
     "glass_shuter_width_top_f1": "glass_shutter_width_top_f1",
     "glass_shuter_width_top_f2": "glass_shutter_width_top_f2",
+    "mesh_shuter_width_top_1": "mesh_shutter_width_top_1",
+    "mesh_shuter_width_top_2": "mesh_shutter_width_top_2",
 }
 
 
@@ -67,8 +70,8 @@ COMPONENT_INPUT_KEYS = {
 }
 
 
-# Keep only common/door fixed values here.
-# FW fixed width/thickness comes from uploaded rules table.
+# Only common door dimensions kept in code.
+# French Window width/thickness comes from uploaded Excel columns.
 FIXED_COMPONENT_DIMENSIONS = {
     "architrave_vertical": {"width": Decimal("40"), "thickness": Decimal("12")},
     "architrave_horizontal": {"width": Decimal("40"), "thickness": Decimal("12")},
@@ -94,7 +97,11 @@ def label_from_key(key):
 
 
 def split_product_codes(product_code):
-    return [code.strip() for code in str(product_code or "").split(",") if code.strip()]
+    return [
+        code.strip()
+        for code in str(product_code or "").split(",")
+        if code.strip()
+    ]
 
 
 def is_door_product(product_cat, product_code):
@@ -121,6 +128,12 @@ def clean_number(value):
         return None
 
     try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    try:
         return float(value)
     except Exception:
         return None
@@ -129,7 +142,7 @@ def clean_number(value):
 def clean_int(value):
     number = clean_number(value)
 
-    if number is None or pd.isna(number):
+    if number is None:
         return 0
 
     return int(float(number))
@@ -169,6 +182,7 @@ def get_table_columns(conn, cur, table):
         FROM information_schema.columns
         WHERE table_name = %s
     """, (table,))
+
     return {row[0] for row in cur.fetchall()}
 
 
@@ -201,23 +215,37 @@ def load_product_rules(conn, cur, product_cat, selected_product_code):
 
     width_col = first_existing_column(columns, [
         "width",
+        "Width",
         "component_width",
         "fixed_width",
     ])
 
     thickness_col = first_existing_column(columns, [
         "thickness",
+        "Thickness",
         "component_thickness",
         "fixed_thickness",
     ])
+
+    quantity_col = first_existing_column(columns, [
+        "quantity",
+        "quanity",
+        "Quanity",
+        "Quantity",
+    ]) or "quantity"
+
+    formula_col = first_existing_column(columns, [
+        "formula_used",
+        "Formula_Used",
+    ]) or "formula_used"
 
     select_cols = [
         "product_code",
         "component",
         "attribute",
         "type",
-        "formula_used",
-        "quantity",
+        f"{formula_col} AS formula_used",
+        f"{quantity_col} AS quantity",
     ]
 
     if width_col:
@@ -234,17 +262,36 @@ def load_product_rules(conn, cur, product_cat, selected_product_code):
         SELECT {", ".join(select_cols)}
         FROM product_component_rules
         WHERE product_cat = %s
+        ORDER BY id
     """
 
-    safe_execute(conn, cur, query, (product_cat,))
+    try:
+        safe_execute(conn, cur, query, (product_cat,))
+    except Exception:
+        query = f"""
+            SELECT {", ".join(select_cols)}
+            FROM product_component_rules
+            WHERE product_cat = %s
+        """
+        safe_execute(conn, cur, query, (product_cat,))
 
     col_names = [desc[0] for desc in cur.description]
     rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
 
     rules = []
+    last_product_code = None
 
     for row in rows:
-        if selected_product_code in split_product_codes(row.get("product_code")):
+        db_product_code = row.get("product_code")
+
+        if db_product_code not in [None, ""]:
+            last_product_code = db_product_code
+        else:
+            db_product_code = last_product_code
+
+        row["product_code"] = db_product_code
+
+        if selected_product_code in split_product_codes(db_product_code):
             rules.append(normalize_rule(row))
 
     return rules
@@ -258,6 +305,24 @@ def build_product_options(products):
             options.append(f"{product_cat} | {single_code}")
 
     return sorted(set(options))
+
+
+def fix_unmatched_parentheses(formula):
+    output = []
+    balance = 0
+
+    for char in str(formula):
+        if char == "(":
+            balance += 1
+            output.append(char)
+        elif char == ")":
+            if balance > 0:
+                balance -= 1
+                output.append(char)
+        else:
+            output.append(char)
+
+    return "".join(output)
 
 
 def known_formula_aliases(rules):
@@ -280,14 +345,20 @@ def known_formula_aliases(rules):
         aliases[full_text] = full_key
         aliases[full_text.replace(" ", "_")] = full_key
 
-        # Uploaded typo support only for component variable names.
         aliases[component_key.replace("shutter", "shuter")] = component_key
         aliases[full_key.replace("shutter", "shuter")] = full_key
 
-        # Uploaded typo like glass_shutter-width_top_1.
+        if "_width_" in component_key:
+            aliases[component_key.replace("_width_", "-width_")] = component_key
+            aliases[component_key.replace("shutter", "shuter").replace("_width_", "-width_")] = component_key
+
         if "_width_" in full_key:
             aliases[full_key.replace("_width_", "-width_")] = full_key
             aliases[full_key.replace("shutter", "shuter").replace("_width_", "-width_")] = full_key
+
+        if "_length_" in component_key:
+            aliases[component_key.replace("_length_", "-length_")] = component_key
+            aliases[component_key.replace("shutter", "shuter").replace("_length_", "-length_")] = component_key
 
         if "_length_" in full_key:
             aliases[full_key.replace("_length_", "-length_")] = full_key
@@ -297,17 +368,29 @@ def known_formula_aliases(rules):
 
 
 def normalize_formula_for_eval(formula, rules):
-    # IMPORTANT: never slug the whole formula.
-    # Operators like + - * / must stay untouched.
+    # IMPORTANT:
+    # Do not slug full formula.
+    # Do not replace "-" with "_".
+    # Operators must remain operators.
     formula = str(formula or "").strip()
+
+    if not formula:
+        return ""
 
     if "=" in formula:
         left, right = formula.split("=", 1)
         if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_ ]*\s*", left):
             formula = right.strip()
 
+    formula = fix_unmatched_parentheses(formula)
+
     for old_var, new_var in VARIABLE_ALIASES.items():
-        formula = re.sub(rf"\b{old_var}\b", new_var, formula, flags=re.IGNORECASE)
+        formula = re.sub(
+            rf"\b{old_var}\b",
+            new_var,
+            formula,
+            flags=re.IGNORECASE
+        )
 
     aliases = known_formula_aliases(rules)
 
@@ -332,7 +415,15 @@ def extract_formula_variables(formula, rules=None):
     if not formula:
         return []
 
-    ignore_words = {"abs", "min", "max", "round", "float", "int", "Decimal"}
+    ignore_words = {
+        "abs",
+        "min",
+        "max",
+        "round",
+        "float",
+        "int",
+        "Decimal",
+    }
 
     found = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", formula)
 
@@ -641,9 +732,6 @@ def store_calculated_value(variables, component, attribute, value):
     attribute_key = slug(attribute)
     numeric_value = float(value)
 
-    # Critical for dependencies:
-    # Frame Vertical / length -> frame_vertical and frame_vertical_length
-    # Sliding Shutter Height_1 / length -> sliding_shutter_height_1 and sliding_shutter_height_1_length
     variables[component_key] = numeric_value
     variables[f"{component_key}_{attribute_key}"] = numeric_value
 
@@ -1172,8 +1260,6 @@ def show_component_calculator(conn, cur):
 
             for _, row in group_df.iterrows():
                 values[str(row["Attribute"]).strip().lower()] = row["Value"]
-
-            component_name = str(first_row["Component"]).strip().lower()
 
             length_value = values.get("length", "")
             width_value = values.get("width", "")
