@@ -286,6 +286,7 @@ def formula_known_keys(rules, variables=None):
         component_key = slug(component)
         attribute_key = slug(attribute)
 
+        keys.add(component_key)
         keys.add(f"{component_key}_{attribute_key}")
 
     return sorted(keys, key=len, reverse=True)
@@ -410,11 +411,7 @@ def extract_formula_variables(formula, rules=None, variables=None):
 
 
 def evaluate_formula(formula, variables, rules):
-    st.write("FORMULA BEFORE:", formula)
-
     formula = normalize_formula_for_eval(formula, rules, variables)
-
-    st.write("FORMULA AFTER:", formula)
 
     if not formula:
         raise FormulaError("Formula empty")
@@ -427,8 +424,6 @@ def evaluate_formula(formula, variables, rules):
     for key, value in variables.items():
         if value not in [None, ""]:
             clean_vars[normalize_variable(key)] = float(value)
-
-    st.write("VARIABLES:", clean_vars)
 
     clean_vars.update({
         "abs": abs,
@@ -578,46 +573,7 @@ def needs_manual_dimension(rule, rules):
 
 
 def selected_component_manual_dimensions(rules):
-    component_attributes = {}
-
-    for rule in rules:
-        component = rule_value(rule, "component")
-        attribute = rule_value(rule, "attribute")
-        component_key = slug(component)
-        attribute_key = slug(attribute)
-
-        if component_key not in component_attributes:
-            component_attributes[component_key] = {
-                "component": component,
-                "attributes": set(),
-            }
-
-        component_attributes[component_key]["attributes"].add(attribute_key)
-
-    manual_dimensions = []
-
-    for component_data in component_attributes.values():
-        component = component_data["component"]
-        attributes = component_data["attributes"]
-
-        for attribute in ["width", "thickness"]:
-            if has_fixed_or_uploaded_dimension(rules, component, attribute):
-                continue
-
-            if existing_component_input_key(component, attribute):
-                continue
-
-            if attribute not in attributes:
-                manual_dimensions.append((component, attribute))
-
-    for rule in rules:
-        if needs_manual_dimension(rule, rules):
-            item = (rule_value(rule, "component"), rule_value(rule, "attribute"))
-
-            if item not in manual_dimensions:
-                manual_dimensions.append(item)
-
-    return manual_dimensions
+    return []
 
 
 def calculated_variable_keys(rules):
@@ -627,6 +583,7 @@ def calculated_variable_keys(rules):
         component_key = slug(rule_value(rule, "component"))
         attribute_key = slug(rule_value(rule, "attribute"))
 
+        keys.add(component_key)
         keys.add(f"{component_key}_{attribute_key}")
 
     return keys
@@ -691,7 +648,12 @@ def get_dimension_value(component, attribute, variables, rules):
     if input_key:
         return Decimal(str(round(float(variables.get(input_key, 0.0)), 2)))
 
-    return Decimal(str(round(float(variables.get(manual_dimension_key(component, attribute), 0.0)), 2)))
+    manual_key = manual_dimension_key(component, attribute)
+
+    if manual_key in variables:
+        return Decimal(str(round(float(variables.get(manual_key, 0.0)), 2)))
+
+    return None
 
 
 def apply_fixed_or_uploaded_component_value(component, attribute, value, rules):
@@ -716,7 +678,14 @@ def store_calculated_value(variables, component, attribute, value):
     attribute_key = slug(attribute)
     numeric_value = float(value)
 
-    variables[f"{component_key}_{attribute_key}"] = numeric_value
+    full_key = f"{component_key}_{attribute_key}"
+    variables[full_key] = numeric_value
+
+    if attribute_key == "length":
+        variables[component_key] = numeric_value
+
+    elif attribute_key in ["width", "height"] and attribute_key in component_key:
+        variables[component_key] = numeric_value
 
 
 def calculate_cft(length, width, thickness, quantity, round_value=True):
@@ -725,7 +694,10 @@ def calculate_cft(length, width, thickness, quantity, round_value=True):
     thickness_num = clean_number(thickness)
     quantity_num = clean_number(quantity)
 
-    if None in [length_num, width_num, thickness_num, quantity_num]:
+    if length_num is None or quantity_num is None:
+        return Decimal("0.00")
+
+    if width_num is None or thickness_num is None:
         return Decimal("0.00")
 
     cft = length_num * width_num * thickness_num / 1000000000 * 35.315 * quantity_num
@@ -970,24 +942,6 @@ def show_component_calculator(conn, cur):
     else:
         st.info("No user based inputs required for this product.")
 
-    manual_dimensions = selected_component_manual_dimensions(rules)
-
-    if manual_dimensions:
-        st.markdown("#### Manual Component Dimensions")
-        manual_cols = st.columns(4)
-
-        for idx, (component, attribute) in enumerate(manual_dimensions):
-            key = manual_dimension_key(component, attribute)
-
-            with manual_cols[idx % 4]:
-                variables[key] = st.number_input(
-                    f"{component} {attribute}".title(),
-                    value=0.0,
-                    step=1.0,
-                    format="%.2f",
-                    key=f"manual_input_{state_key}_{slug(component)}_{slug(attribute)}_{idx}"
-                )
-
     st.markdown("---")
 
     if st.button("Generate Components", key=f"generate_components_{state_key}"):
@@ -1015,12 +969,6 @@ def show_component_calculator(conn, cur):
             house_variables["lh_quantity"] = lh_quantity
             house_variables["rh_quantity"] = rh_quantity
             house_variables["quantity"] = product_qty_multiplier
-
-            with st.expander("Debug House Variables"):
-                st.json(house_variables)
-
-            with st.expander("Debug Rules"):
-                st.write(rules)
 
             pending_rules = list(rules)
             calculated_rules = []
@@ -1184,6 +1132,9 @@ def show_component_calculator(conn, cur):
                         rules
                     )
 
+                    if value is None:
+                        continue
+
                     fallback_qty = base_quantity(
                         row["component"],
                         None,
@@ -1192,7 +1143,7 @@ def show_component_calculator(conn, cur):
                     )
 
                     row["attributes"][attribute] = {
-                        "type": "manual",
+                        "type": "dimension",
                         "formula": "",
                         "value": float(value),
                         "base_quantity": fallback_qty,
@@ -1203,7 +1154,7 @@ def show_component_calculator(conn, cur):
                         "Product": product_code,
                         "Component": row["component"],
                         "Attribute": attribute,
-                        "Type": "manual",
+                        "Type": "dimension",
                         "Formula": "",
                         "Value": value,
                         "Base Quantity": fallback_qty,
