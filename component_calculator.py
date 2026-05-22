@@ -640,26 +640,21 @@ def apply_fixed_or_uploaded_component_value(component, attribute, value, rules):
 
 
 def store_calculated_value(variables, component, attribute, value):
+
     if value is None:
         return
 
     component_key = normalize_variable(slug(component))
     attribute_key = normalize_variable(slug(attribute))
+
     numeric_value = float(value)
 
-    # Always store the fully-qualified key e.g. glass_shutter_width_top_1_width
+    # always store full key
     full_key = f"{component_key}_{attribute_key}"
     variables[full_key] = numeric_value
 
-    # FIX 1: only write the bare component key (e.g. glass_shutter_width_top_1)
-    # when the attribute is 'length'.  Previously every attribute overwrote it,
-    # so a later width/thickness rule silently clobbered the length value that
-    # downstream formulas depend on.  Now:
-    #   - length   → always writes the bare key (primary dimension)
-    #   - anything else → writes the bare key only if it has not been set yet
-    #     (safe first-seen fallback, preserves door product behaviour)
-    # store primary alias only once
-    if component_key not in variables:
+    # ONLY length becomes primary component variable
+    if attribute_key == "length":
         variables[component_key] = numeric_value
 
 
