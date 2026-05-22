@@ -410,8 +410,6 @@ def normalize_formula_for_eval(formula, rules, variables=None):
                 flags=re.IGNORECASE
             )
 
-    formula = repair_joined_formula_tokens(formula, rules, variables)
-
     return formula
 
 
@@ -438,7 +436,7 @@ def evaluate_formula(formula, variables, rules):
     if not formula:
         raise FormulaError("Formula empty")
 
-    if re.search(r"[A-Za-z_][A-Za-z0-9_]*\s+[A-Za-z_][A-Za-z0-9_]*", formula):
+    if re.search(r"[A-Za-z0-9_]\s+[A-Za-z0-9_]", formula):
         raise FormulaError(f"Invalid formula syntax: {formula}")
 
     clean_vars = {}
@@ -737,17 +735,10 @@ def store_calculated_value(variables, component, attribute, value):
 
     component_key = slug(component)
     attribute_key = slug(attribute)
-    numeric_value = float(value)
 
     full_key = f"{component_key}_{attribute_key}"
-    variables[full_key] = numeric_value
 
-    if attribute_key == "length":
-        variables[component_key] = numeric_value
-
-    elif attribute_key in ["width", "height"] and attribute_key in component_key:
-        variables[component_key] = numeric_value
-
+    variables[full_key] = float(value)
 
 def calculate_cft(length, width, thickness, quantity, round_value=True):
     length_num = clean_number(length)
