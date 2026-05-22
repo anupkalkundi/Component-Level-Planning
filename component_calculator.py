@@ -10,9 +10,9 @@ class FormulaError(Exception):
 
 
 VARIABLE_ALIASES = {
-    "opening_height": "opening_length",
     "opening_l": "opening_length",
     "opening_w": "opening_width",
+    "opening_height": "opening_length",
     "height_opening": "opening_length",
     "width_opening": "opening_width",
     "clearance": "vertical_clearance",
@@ -25,23 +25,10 @@ VARIABLE_ALIASES = {
     "extra_width": "architrave_extra_width",
     "frame_h_thk": "frame_horizontal_thickness",
     "frame_v_thk": "frame_vertical_thickness",
-}
-
-
-DISPLAY_VARIABLE_ALIASES = {
-    "opening height 1": "opening_height_1",
-    "opening height 2": "opening_height_2",
-    "opening length 1": "opening_length_1",
-    "opening length 2": "opening_length_2",
-    "opening length": "opening_length",
-    "opening width": "opening_width",
-    "vertical clearance": "vertical_clearance",
-    "horizontal clearance": "horizontal_clearance",
-    "architrave extra length": "architrave_extra_length",
-    "architrave extra width": "architrave_extra_width",
-    "frame horizontal thickness": "frame_horizontal_thickness",
-    "frame vertical thickness": "frame_vertical_thickness",
-    "shutter thickness": "shutter_thickness",
+    "glass_shuter_width_top_1": "glass_shutter_width_top_1",
+    "glass_shuter_width_top_2": "glass_shutter_width_top_2",
+    "glass_shuter_width_top_f1": "glass_shutter_width_top_f1",
+    "glass_shuter_width_top_f2": "glass_shutter_width_top_f2",
 }
 
 
@@ -62,10 +49,7 @@ DEFAULT_VALUES = {
     "lh_quantity": 0.0,
     "rh_quantity": 0.0,
     "quantity": 0.0,
-    "allowance": 0.0,
-    "groove": 0.0,
-    "cut": 0.0,
-    "offset": 0.0,
+    "mesh_yes": 0.0,
 }
 
 
@@ -86,12 +70,41 @@ COMPONENT_INPUT_KEYS = {
 FIXED_COMPONENT_DIMENSIONS = {
     "architrave_vertical": {"width": Decimal("40"), "thickness": Decimal("12")},
     "architrave_horizontal": {"width": Decimal("40"), "thickness": Decimal("12")},
+    "architrave_vertical_front": {"width": Decimal("40"), "thickness": Decimal("12")},
+    "architrave_horizontal_front": {"width": Decimal("40"), "thickness": Decimal("12")},
     "door_frame_vertical_beading": {"width": Decimal("27"), "thickness": Decimal("11")},
     "door_frame_horizontal_beading": {"width": Decimal("27"), "thickness": Decimal("11")},
     "door_frame_vertical_beading_1": {"width": Decimal("15"), "thickness": Decimal("7")},
     "door_frame_horizontal_beading_1": {"width": Decimal("15"), "thickness": Decimal("7")},
     "door_frame_horizontal_beading_2": {"width": Decimal("20"), "thickness": Decimal("8")},
     "louver": {"width": Decimal("41.5"), "thickness": Decimal("7.5")},
+    "sliding_shutter_height_1": {"width": Decimal("110"), "thickness": Decimal("62")},
+    "sliding_shutter_height_2": {"width": Decimal("110"), "thickness": Decimal("62")},
+    "sliding_shutter_height_f1": {"width": Decimal("110"), "thickness": Decimal("62")},
+    "sliding_shutter_height_f2": {"width": Decimal("110"), "thickness": Decimal("62")},
+    "mesh_vertical_1": {"width": Decimal("110"), "thickness": Decimal("40")},
+    "mesh_vertical_2": {"width": Decimal("110"), "thickness": Decimal("40")},
+    "glass_shutter_width_top_1": {"width": Decimal("110"), "thickness": Decimal("62")},
+    "glass_shutter_width_top_2": {"width": Decimal("110"), "thickness": Decimal("62")},
+    "glass_shutter_width_top_f1": {"width": Decimal("110"), "thickness": Decimal("62")},
+    "glass_shutter_width_top_f2": {"width": Decimal("110"), "thickness": Decimal("62")},
+    "glass_shutter_width_bottom_1": {"width": Decimal("140"), "thickness": Decimal("62")},
+    "glass_shutter_width_bottom_2": {"width": Decimal("140"), "thickness": Decimal("62")},
+    "glass_shutter_width_bottom_f1": {"width": Decimal("140"), "thickness": Decimal("62")},
+    "glass_shutter_width_bottom_f2": {"width": Decimal("140"), "thickness": Decimal("62")},
+    "mesh_shutter_width_top_1": {"width": Decimal("110"), "thickness": Decimal("40")},
+    "mesh_shutter_width_top_2": {"width": Decimal("110"), "thickness": Decimal("40")},
+    "mesh_shutter_width_bottom_1": {"width": Decimal("135"), "thickness": Decimal("40")},
+    "mesh_shutter_width_bottom_2": {"width": Decimal("135"), "thickness": Decimal("40")},
+    "glass_beading_vertical_1": {"width": Decimal("27"), "thickness": Decimal("22")},
+    "glass_beading_vertical_2": {"width": Decimal("27"), "thickness": Decimal("22")},
+    "glass_beading_horizontal_1": {"width": Decimal("27"), "thickness": Decimal("22")},
+    "glass_beading_horizontal_2": {"width": Decimal("27"), "thickness": Decimal("22")},
+    "mesh_beading_vertical_1": {"width": Decimal("18"), "thickness": Decimal("18")},
+    "mesh_beading_vertical_2": {"width": Decimal("18"), "thickness": Decimal("18")},
+    "mesh_beading_horizontal_1": {"width": Decimal("18"), "thickness": Decimal("18")},
+    "mesh_beading_horizontal_2": {"width": Decimal("18"), "thickness": Decimal("18")},
+    "side_beam": {"width": Decimal("213"), "thickness": Decimal("50")},
 }
 
 
@@ -100,6 +113,8 @@ def slug(value):
 
 
 def label_from_key(key):
+    if key == "mesh_yes":
+        return "Mesh"
     return str(key).replace("_", " ").title()
 
 
@@ -108,8 +123,13 @@ def split_product_codes(product_code):
 
 
 def is_door_product(product_cat, product_code):
-    product_key = slug(f"{product_cat} {product_code}")
-    return "door" in product_key or "doowindow" in product_key or "door_window" in product_key
+    text = slug(f"{product_cat} {product_code}")
+    return "door" in text or "doowindow" in text or "door_window" in text
+
+
+def is_fw_product(product_cat, product_code):
+    text = slug(f"{product_cat} {product_code}")
+    return "fw" in text or "french_window" in text
 
 
 def is_fw3_product(product_cat, product_code):
@@ -117,96 +137,8 @@ def is_fw3_product(product_cat, product_code):
 
 
 def normalize_variable(var_name):
-    var_name = str(var_name).strip()
-    var_name = DISPLAY_VARIABLE_ALIASES.get(var_name.lower(), var_name)
+    var_name = slug(var_name)
     return VARIABLE_ALIASES.get(var_name, var_name)
-
-
-def clean_formula_text(formula):
-    formula = str(formula or "").strip()
-
-    if "=" in formula:
-        left, right = formula.split("=", 1)
-        if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_ ]*\s*", left):
-            formula = right.strip()
-
-    for old_text, new_var in sorted(DISPLAY_VARIABLE_ALIASES.items(), key=lambda x: len(x[0]), reverse=True):
-        formula = re.sub(rf"\b{re.escape(old_text)}\b", new_var, formula, flags=re.IGNORECASE)
-
-    for old_var, new_var in VARIABLE_ALIASES.items():
-        formula = re.sub(rf"\b{old_var}\b", new_var, formula)
-
-    return formula
-
-
-def split_joined_variable(token, known_vars):
-    if token in known_vars:
-        return [token]
-
-    parts = []
-    remaining = token
-
-    while remaining:
-        matches = [
-            var for var in known_vars
-            if remaining == var or remaining.startswith(f"{var}_")
-        ]
-
-        if not matches:
-            return None
-
-        best = max(matches, key=len)
-        parts.append(best)
-
-        if remaining == best:
-            remaining = ""
-        else:
-            remaining = remaining[len(best) + 1:]
-
-    return parts
-
-
-def joined_parts_to_expression(parts):
-    if len(parts) <= 1:
-        return parts[0] if parts else ""
-
-    first = parts[0]
-    rest = parts[1:]
-
-    if first in ["opening_length", "opening_width"]:
-        return " + ".join(parts)
-
-    if first in ["frame_vertical_length", "frame_horizontal_length", "opening_length_1", "opening_length_2"]:
-        return first + " - " + " - ".join(rest)
-
-    return " + ".join(parts)
-
-
-def normalize_formula(formula, known_vars=None):
-    formula = clean_formula_text(formula)
-
-    if not known_vars:
-        return formula
-
-    known_vars = {normalize_variable(v) for v in known_vars}
-
-    def replace_token(match):
-        token = normalize_variable(match.group(0))
-
-        if token in {"abs", "min", "max", "round", "float", "int", "Decimal"}:
-            return token
-
-        if token in known_vars:
-            return token
-
-        parts = split_joined_variable(token, known_vars)
-
-        if parts:
-            return f"({joined_parts_to_expression(parts)})"
-
-        return token
-
-    return re.sub(r"\b[A-Za-z_][A-Za-z0-9_]*\b", replace_token, formula)
 
 
 def safe_execute(conn, cur, query, params=None):
@@ -231,7 +163,6 @@ def get_distinct_values(conn, cur, table, column, where_sql="", params=None):
 def clean_number(value):
     if value in [None, ""]:
         return None
-
     try:
         return float(value)
     except Exception:
@@ -240,32 +171,89 @@ def clean_number(value):
 
 def clean_int(value):
     number = clean_number(value)
-
     if number is None or pd.isna(number):
         return 0
-
     return int(float(number))
 
 
-def extract_formula_variables(formula, known_vars=None):
-    formula = normalize_formula(formula, known_vars)
+def formula_key_aliases(known_keys):
+    aliases = {}
+
+    for key in known_keys:
+        aliases[key] = key
+        aliases[key.replace("_", " ")] = key
+
+        for part in ["length", "width", "height", "top", "bottom"]:
+            aliases[key.replace(f"_{part}_", f"-{part}_")] = key
+
+        aliases[key.replace("shutter", "shuter")] = key
+        aliases[key.replace("shutter", "shuter").replace("_width_", "-width_")] = key
+        aliases[key.replace("shutter", "shuter").replace("_length_", "-length_")] = key
+
+    return aliases
+
+
+def known_formula_keys(rules, variables):
+    keys = set(DEFAULT_VALUES.keys())
+    keys.update(variables.keys())
+
+    for component, attribute, _, _, _ in rules:
+        component_key = slug(component)
+        attribute_key = slug(attribute)
+        keys.add(component_key)
+        keys.add(f"{component_key}_{attribute_key}")
+
+    return keys
+
+
+def normalize_formula_for_eval(formula, rules, variables):
+    formula = str(formula or "").strip()
+
+    if "=" in formula:
+        left, right = formula.split("=", 1)
+        if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_ ]*\s*", left):
+            formula = right.strip()
+
+    known_keys = known_formula_keys(rules, variables)
+    aliases = formula_key_aliases(known_keys)
+
+    for bad_key, good_key in sorted(aliases.items(), key=lambda x: len(x[0]), reverse=True):
+        if not bad_key:
+            continue
+        formula = re.sub(
+            rf"(?<![A-Za-z0-9_]){re.escape(bad_key)}(?![A-Za-z0-9_])",
+            good_key,
+            formula,
+            flags=re.IGNORECASE,
+        )
+
+    for old_var, new_var in VARIABLE_ALIASES.items():
+        formula = re.sub(rf"\b{old_var}\b", new_var, formula, flags=re.IGNORECASE)
+
+    return formula
+
+
+def extract_formula_variables(formula, rules=None, variables=None):
+    rules = rules or []
+    variables = variables or {}
+    formula = normalize_formula_for_eval(formula, rules, variables)
 
     if not formula:
         return []
 
     ignore_words = {"abs", "min", "max", "round", "float", "int", "Decimal"}
 
-    variables = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", formula)
+    found = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", formula)
 
     return sorted({
         normalize_variable(v)
-        for v in variables
+        for v in found
         if v not in ignore_words
     })
 
 
-def evaluate_formula(formula, variables):
-    formula = normalize_formula(formula, variables.keys())
+def evaluate_formula(formula, variables, rules):
+    formula = normalize_formula_for_eval(formula, rules, variables)
 
     if not formula:
         raise FormulaError("Formula empty")
@@ -306,7 +294,34 @@ def fixed_value(formula, quantity):
     return None
 
 
-def base_quantity(component, quantity, previous_qty):
+def conditional_quantity(quantity, variables):
+    text = str(quantity or "").strip().lower()
+
+    if not text:
+        return None
+
+    number = clean_number(quantity)
+    if number is not None:
+        return int(number)
+
+    if "mesh yes" in text and "mesh no" in text:
+        yes_match = re.search(r"mesh\s*yes\s*:\s*([0-9.]+)", text)
+        no_match = re.search(r"mesh\s*no\s*:\s*([0-9.]+)", text)
+
+        yes_qty = int(float(yes_match.group(1))) if yes_match else 0
+        no_qty = int(float(no_match.group(1))) if no_match else 0
+
+        return yes_qty if int(variables.get("mesh_yes", 0)) == 1 else no_qty
+
+    first_number = re.search(r"([0-9.]+)", text)
+    if first_number:
+        return int(float(first_number.group(1)))
+
+    return None
+
+
+def base_quantity(component, quantity, previous_qty, variables=None):
+    variables = variables or {}
     component_key = slug(component)
 
     if component_key == "flush_shutter":
@@ -315,10 +330,10 @@ def base_quantity(component, quantity, previous_qty):
     if component_key == "architrave_vertical":
         return 4
 
-    quantity_num = clean_number(quantity)
+    qty = conditional_quantity(quantity, variables)
 
-    if quantity_num is not None:
-        return int(quantity_num)
+    if qty is not None:
+        return qty
 
     return int(previous_qty.get(component_key, 1))
 
@@ -346,20 +361,10 @@ def existing_component_input_key(component, attribute):
     return key if key in COMPONENT_INPUT_KEYS else None
 
 
-def apply_fixed_component_value(component, attribute, value):
-    fixed_value_for_component = fixed_dimension_value(component, attribute)
-
-    if fixed_value_for_component is not None:
-        return fixed_value_for_component
-
-    return value
-
-
 def needs_manual_dimension(rule):
     component, attribute, rule_type, formula, _ = rule
     attribute_key = slug(attribute)
     rule_type = str(rule_type or "").strip().lower()
-    formula = clean_formula_text(formula)
 
     if existing_component_input_key(component, attribute):
         return False
@@ -368,7 +373,7 @@ def needs_manual_dimension(rule):
         attribute_key in ["width", "thickness"]
         and not has_fixed_dimension(component, attribute)
         and rule_type not in ["formula", "fomula"]
-        and formula == ""
+        and str(formula or "").strip() == ""
     )
 
 
@@ -396,10 +401,8 @@ def selected_component_manual_dimensions(rules):
         for attribute in ["width", "thickness"]:
             if has_fixed_dimension(component, attribute):
                 continue
-
             if existing_component_input_key(component, attribute):
                 continue
-
             if attribute not in attributes:
                 manual_dimensions.append((component, attribute))
 
@@ -407,7 +410,6 @@ def selected_component_manual_dimensions(rules):
         if needs_manual_dimension(rule):
             component, attribute, _, _, _ = rule
             item = (component, attribute)
-
             if item not in manual_dimensions:
                 manual_dimensions.append(item)
 
@@ -447,21 +449,30 @@ def product_input_keys(product_cat, product_code, rules):
             "opening_height_2",
             "opening_length_1",
             "opening_length_2",
+            "mesh_yes",
         ]
 
-    known_vars = set(DEFAULT_VALUES.keys()) | calculated_variable_keys(rules)
     formula_vars = set()
+    temp_vars = dict(DEFAULT_VALUES)
 
     for _, _, rule_type, formula, _ in rules:
         if str(rule_type or "").strip().lower() in ["formula", "fomula"]:
-            formula_vars.update(extract_formula_variables(formula, known_vars))
+            formula_vars.update(extract_formula_variables(formula, rules, temp_vars))
 
     formula_vars -= calculated_variable_keys(rules)
     formula_vars.discard("quantity")
     formula_vars.discard("lh_quantity")
     formula_vars.discard("rh_quantity")
 
+    if is_fw_product(product_cat, product_code):
+        formula_vars.add("mesh_yes")
+
     return sorted(formula_vars)
+
+
+def apply_fixed_component_value(component, attribute, value):
+    fixed = fixed_dimension_value(component, attribute)
+    return fixed if fixed is not None else value
 
 
 def store_calculated_value(variables, component, attribute, value):
@@ -472,15 +483,17 @@ def store_calculated_value(variables, component, attribute, value):
     attribute_key = slug(attribute)
     numeric_value = float(value)
 
-    variables[component_key] = numeric_value
     variables[f"{component_key}_{attribute_key}"] = numeric_value
+
+    if attribute_key in ["length", "width", "height", "thickness"]:
+        variables[f"{component_key}_{attribute_key}"] = numeric_value
 
 
 def get_dimension_value(component, attribute, variables):
-    fixed_value_for_component = fixed_dimension_value(component, attribute)
+    fixed = fixed_dimension_value(component, attribute)
 
-    if fixed_value_for_component is not None:
-        return fixed_value_for_component
+    if fixed is not None:
+        return fixed
 
     input_key = existing_component_input_key(component, attribute)
 
@@ -758,13 +771,21 @@ def show_component_calculator(conn, cur):
 
         for idx, key in enumerate(input_keys):
             with input_cols[idx % 4]:
-                variables[key] = st.number_input(
-                    label_from_key(key),
-                    value=float(DEFAULT_VALUES.get(key, 0.0)),
-                    step=1.0,
-                    format="%.2f",
-                    key=f"input_{state_key}_{key}"
-                )
+                if key == "mesh_yes":
+                    mesh_choice = st.selectbox(
+                        "Mesh",
+                        ["No", "Yes"],
+                        key=f"input_{state_key}_{key}"
+                    )
+                    variables[key] = 1 if mesh_choice == "Yes" else 0
+                else:
+                    variables[key] = st.number_input(
+                        label_from_key(key),
+                        value=float(DEFAULT_VALUES.get(key, 0.0)),
+                        step=1.0,
+                        format="%.2f",
+                        key=f"input_{state_key}_{key}"
+                    )
     else:
         st.info("No user based inputs required for this product.")
 
@@ -830,12 +851,12 @@ def show_component_calculator(conn, cur):
                     formula = rule[3]
                     quantity = rule[4]
 
-                    component_qty = base_quantity(component, quantity, previous_qty)
+                    component_qty = base_quantity(component, quantity, previous_qty, house_variables)
                     total_quantity = int(component_qty * product_qty_multiplier)
 
                     try:
                         if rule_type in ["formula", "fomula"]:
-                            value = evaluate_formula(formula, house_variables)
+                            value = evaluate_formula(formula, house_variables, rules)
                         elif needs_manual_dimension(rule):
                             value = get_dimension_value(component, attribute, variables)
                         else:
@@ -856,7 +877,7 @@ def show_component_calculator(conn, cur):
                             "Component": component,
                             "Attribute": attribute,
                             "Type": "formula" if rule_type == "fomula" else rule_type,
-                            "Formula": normalize_formula(formula, house_variables.keys()),
+                            "Formula": normalize_formula_for_eval(formula, rules, house_variables),
                             "Value": value,
                             "Base Quantity": component_qty,
                             "Total Quantity": total_quantity,
@@ -885,7 +906,7 @@ def show_component_calculator(conn, cur):
 
                         component_tracking_map[tracking_key]["attributes"][attribute] = {
                             "type": "formula" if rule_type == "fomula" else rule_type,
-                            "formula": normalize_formula(formula, house_variables.keys()),
+                            "formula": normalize_formula_for_eval(formula, rules, house_variables),
                             "value": float(value),
                             "base_quantity": component_qty,
                         }
@@ -910,7 +931,7 @@ def show_component_calculator(conn, cur):
                         formula = rule[3]
                         quantity = rule[4]
                         rule_type = str(rule[2] or "").strip().lower()
-                        component_qty = base_quantity(component, quantity, previous_qty)
+                        component_qty = base_quantity(component, quantity, previous_qty, house_variables)
 
                         preview_rows.append({
                             "House Number": house_number,
@@ -918,7 +939,7 @@ def show_component_calculator(conn, cur):
                             "Component": component,
                             "Attribute": attribute,
                             "Type": "formula" if rule_type == "fomula" else rule_type,
-                            "Formula": normalize_formula(formula, house_variables.keys()),
+                            "Formula": normalize_formula_for_eval(formula, rules, house_variables),
                             "Value": None,
                             "Base Quantity": component_qty,
                             "Total Quantity": int(component_qty * product_qty_multiplier),
@@ -927,7 +948,7 @@ def show_component_calculator(conn, cur):
                             "Quantity": product_qty_multiplier,
                         })
 
-                        missing = ", ".join(extract_formula_variables(formula, house_variables.keys()))
+                        missing = ", ".join(extract_formula_variables(formula, rules, house_variables))
 
                         st.error(
                             f"{house_number} - {component} / {attribute}: Missing dependency. Required: {missing}"
@@ -944,7 +965,7 @@ def show_component_calculator(conn, cur):
                         continue
 
                     value = get_dimension_value(row["component"], attribute, variables)
-                    fallback_qty = base_quantity(row["component"], None, previous_qty)
+                    fallback_qty = base_quantity(row["component"], None, previous_qty, house_variables)
 
                     row["attributes"][attribute] = {
                         "type": "manual",
@@ -1011,8 +1032,7 @@ def show_component_calculator(conn, cur):
             values = {}
 
             for _, row in group_df.iterrows():
-                attr = str(row["Attribute"]).strip().lower()
-                values[attr] = row["Value"]
+                values[str(row["Attribute"]).strip().lower()] = row["Value"]
 
             component_name = str(first_row["Component"]).strip().lower()
 
@@ -1057,7 +1077,6 @@ def show_component_calculator(conn, cur):
 
             row_data["Total Quantity"] = first_row["Total Quantity"]
             row_data["CFT"] = cft_value
-
             house_rows.append(row_data)
 
         total_cft = sum(clean_number(row.get("CFT")) or 0 for row in house_rows)
@@ -1079,11 +1098,9 @@ def show_component_calculator(conn, cur):
 
         total_row["Total Quantity"] = ""
         total_row["CFT"] = Decimal(str(round(total_cft, 2)))
-
         house_rows.append(total_row)
 
         df_preview = pd.DataFrame(house_rows)
-
         st.dataframe(df_preview, use_container_width=True, hide_index=True)
 
         errors_found = st.session_state.get("generated_component_errors", False)
@@ -1219,7 +1236,6 @@ def show_component_calculator(conn, cur):
                 )
 
                 conn.commit()
-
                 st.success(f"{len(generated_insert_rows)} component(s) sent to tracking successfully")
 
             except Exception as e:
