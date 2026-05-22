@@ -135,15 +135,19 @@ def clean_number(value):
 
 def clean_int(value):
     number = clean_number(value)
+
     if number is None:
         return 0
+
     return int(float(number))
 
 
 def decimal_or_none(value):
     number = clean_number(value)
+
     if number is None:
         return None
+
     return Decimal(str(round(number, 2)))
 
 
@@ -199,6 +203,9 @@ def load_product_rules(conn, cur, product_cat, selected_product_code):
     width_col = first_existing_column(columns, ["width", "fixed_width", "component_width"])
     thickness_col = first_existing_column(columns, ["thickness", "fixed_thickness", "component_thickness"])
 
+    if not all([product_code_col, product_cat_col, component_col, attribute_col, type_col, formula_col, quantity_col]):
+        raise Exception("Missing required columns in product_component_rules table.")
+
     select_cols = [
         f"{product_code_col} AS product_code",
         f"{component_col} AS component",
@@ -225,6 +232,7 @@ def load_product_rules(conn, cur, product_cat, selected_product_code):
     """
 
     safe_execute(conn, cur, query, (product_cat,))
+
     col_names = [desc[0] for desc in cur.description]
     rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
 
@@ -258,69 +266,12 @@ def load_product_rules(conn, cur, product_cat, selected_product_code):
 
 def build_product_options(products):
     options = []
+
     for product_cat, product_code in products:
         for single_code in split_product_codes(product_code):
             options.append(f"{product_cat} | {single_code}")
+
     return sorted(set(options))
-
-
-def fix_unmatched_parentheses(formula):
-    output = []
-    balance = 0
-
-    for char in str(formula):
-        if char == "(":
-            balance += 1
-            output.append(char)
-        elif char == ")":
-            if balance > 0:
-                balance -= 1
-                output.append(char)
-        else:
-            output.append(char)
-
-    return "".join(output)
-
-
-def known_formula_aliases(rules):
-    aliases = {}
-
-    for rule in rules:
-        component = str(rule_value(rule, "component", "")).strip()
-        attribute = str(rule_value(rule, "attribute", "")).strip()
-
-        component_key = slug(component)
-        attribute_key = slug(attribute)
-        full_key = f"{component_key}_{attribute_key}"
-
-        component_text = component.lower()
-        full_text = f"{component} {attribute}".strip().lower()
-
-        aliases[component_text] = component_key
-        aliases[component_text.replace(" ", "_")] = component_key
-        aliases[full_text] = full_key
-        aliases[full_text.replace(" ", "_")] = full_key
-
-        aliases[component_key.replace("shutter", "shuter")] = component_key
-        aliases[full_key.replace("shutter", "shuter")] = full_key
-
-        if "_width_" in component_key:
-            aliases[component_key.replace("_width_", "-width_")] = component_key
-            aliases[component_key.replace("shutter", "shuter").replace("_width_", "-width_")] = component_key
-
-        if "_width_" in full_key:
-            aliases[full_key.replace("_width_", "-width_")] = full_key
-            aliases[full_key.replace("shutter", "shuter").replace("_width_", "-width_")] = full_key
-
-        if "_length_" in component_key:
-            aliases[component_key.replace("_length_", "-length_")] = component_key
-            aliases[component_key.replace("shutter", "shuter").replace("_length_", "-length_")] = component_key
-
-        if "_length_" in full_key:
-            aliases[full_key.replace("_length_", "-length_")] = full_key
-            aliases[full_key.replace("shutter", "shuter").replace("_length_", "-length_")] = full_key
-
-    return aliases
 
 
 def normalize_formula_for_eval(formula, rules):
@@ -334,23 +285,20 @@ def normalize_formula_for_eval(formula, rules):
         if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_ ]*\s*", left):
             formula = right.strip()
 
-    formula = fix_unmatched_parentheses(formula)
-
     for old_var, new_var in VARIABLE_ALIASES.items():
-        formula = re.sub(rf"\b{old_var}\b", new_var, formula, flags=re.IGNORECASE)
-
-    aliases = known_formula_aliases(rules)
-
-    for bad_key, good_key in sorted(aliases.items(), key=lambda item: len(item[0]), reverse=True):
-        if not bad_key:
-            continue
-
         formula = re.sub(
-            rf"(?<![A-Za-z0-9_]){re.escape(bad_key)}(?![A-Za-z0-9_])",
-            good_key,
+            rf"\b{old_var}\b",
+            new_var,
             formula,
-            flags=re.IGNORECASE,
+            flags=re.IGNORECASE
         )
+
+    # IMPORTANT:
+    # Alias auto-replacement is intentionally disabled.
+    # Do not mutate formulas aggressively.
+    # Formula must be correct in DB with real operators:
+    # opening_length - vertical_clearance
+    # frame_vertical_length - frame_horizontal_thickness
 
     return formula
 
@@ -374,16 +322,25 @@ def extract_formula_variables(formula, rules=None):
 
 
 def evaluate_formula(formula, variables, rules):
+    st.write("FORMULA BEFORE:", formula)
+
     formula = normalize_formula_for_eval(formula, rules)
+
+    st.write("FORMULA AFTER:", formula)
 
     if not formula:
         raise FormulaError("Formula empty")
+
+    if re.search(r"[A-Za-z_][A-Za-z0-9_]*\s+[A-Za-z_][A-Za-z0-9_]*", formula):
+        raise FormulaError(f"Invalid formula syntax: {formula}")
 
     clean_vars = {}
 
     for key, value in variables.items():
         if value not in [None, ""]:
             clean_vars[normalize_variable(key)] = float(value)
+
+    st.write("VARIABLES:", clean_vars)
 
     clean_vars.update({
         "abs": abs,
@@ -397,7 +354,11 @@ def evaluate_formula(formula, variables, rules):
         return Decimal(str(round(result, 2)))
 
     except NameError as e:
-        raise FormulaError(f"Missing variable: {e}")
+        try:
+            missing_var = str(e).split("'")[1]
+        except Exception:
+            missing_var = str(e)
+        raise FormulaError(f"Missing dependency variable: {missing_var}")
 
     except Exception as e:
         raise FormulaError(str(e))
@@ -578,7 +539,6 @@ def calculated_variable_keys(rules):
         component_key = slug(rule_value(rule, "component"))
         attribute_key = slug(rule_value(rule, "attribute"))
 
-        keys.add(component_key)
         keys.add(f"{component_key}_{attribute_key}")
 
     return keys
@@ -668,7 +628,6 @@ def store_calculated_value(variables, component, attribute, value):
     attribute_key = slug(attribute)
     numeric_value = float(value)
 
-    variables[component_key] = numeric_value
     variables[f"{component_key}_{attribute_key}"] = numeric_value
 
 
@@ -969,12 +928,26 @@ def show_component_calculator(conn, cur):
             house_variables["rh_quantity"] = rh_quantity
             house_variables["quantity"] = product_qty_multiplier
 
+            with st.expander("Debug House Variables"):
+                st.json(house_variables)
+
+            with st.expander("Debug Rules"):
+                st.write(rules)
+
             pending_rules = list(rules)
             calculated_rules = []
             previous_qty = {}
             component_tracking_map = {}
+            loop_count = 0
 
             while pending_rules:
+                loop_count += 1
+
+                if loop_count > 20:
+                    st.error("Infinite dependency loop detected")
+                    errors_found = True
+                    break
+
                 progressed = False
                 next_pending = []
                 dependency_errors = []
@@ -1067,7 +1040,7 @@ def show_component_calculator(conn, cur):
                         progressed = True
 
                     except FormulaError as e:
-                        if "Missing variable" in str(e):
+                        if "Missing dependency variable" in str(e):
                             next_pending.append(rule)
                             dependency_errors.append((rule, str(e)))
                         else:
@@ -1079,7 +1052,7 @@ def show_component_calculator(conn, cur):
                         st.error(f"{house_number} - {component} / {attribute}: {e}")
 
                 if not progressed:
-                    for rule, _ in dependency_errors:
+                    for rule, error_message in dependency_errors:
                         component = str(rule_value(rule, "component")).strip()
                         attribute = str(rule_value(rule, "attribute")).strip()
                         formula = rule_value(rule, "formula")
@@ -1102,10 +1075,8 @@ def show_component_calculator(conn, cur):
                             "Quantity": product_qty_multiplier,
                         })
 
-                        missing = ", ".join(extract_formula_variables(formula, rules))
-
                         st.error(
-                            f"{house_number} - {component} / {attribute}: Missing dependency. Required: {missing}"
+                            f"{house_number} - {component} / {attribute}: {error_message}"
                         )
 
                     errors_found = True
