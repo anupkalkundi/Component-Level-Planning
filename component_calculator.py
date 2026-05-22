@@ -26,12 +26,18 @@ VARIABLE_ALIASES = {
     "frame_h_thk": "frame_horizontal_thickness",
     "frame_v_thk": "frame_vertical_thickness",
     "frame_horizontal_thicknes": "frame_horizontal_thickness",
-    "glass_shuter_width_top_1": "glass_shutter_width_top_1",
-    "glass_shuter_width_top_2": "glass_shutter_width_top_2",
-    "glass_shuter_width_top_f1": "glass_shutter_width_top_f1",
-    "glass_shuter_width_top_f2": "glass_shutter_width_top_f2",
-    "mesh_shuter_width_top_1": "mesh_shutter_width_top_1",
-    "mesh_shuter_width_top_2": "mesh_shutter_width_top_2",
+    "glass_shutter_width_top1": "glass_shutter_width_top_1",
+    "glass_shutter_width_top2": "glass_shutter_width_top_2",
+    "glass_shutter_width_bottom1": "glass_shutter_width_bottom_1",
+    "glass_shutter_width_bottom2": "glass_shutter_width_bottom_2",
+    "mesh_shutter_width_top1": "mesh_shutter_width_top_1",
+    "mesh_shutter_width_top2": "mesh_shutter_width_top_2",
+    "mesh_shutter_width_bottom1": "mesh_shutter_width_bottom_1",
+    "mesh_shutter_width_bottom2": "mesh_shutter_width_bottom_2",
+    "glass_shutter_width_topf1": "glass_shutter_width_top_f1",
+    "glass_shutter_width_topf2": "glass_shutter_width_top_f2",
+    "glass_shutter_width_bottomf1": "glass_shutter_width_bottom_f1",
+    "glass_shutter_width_bottomf2": "glass_shutter_width_bottom_f2",
 }
 
 
@@ -735,17 +741,20 @@ def store_calculated_value(variables, component, attribute, value):
     if value is None:
         return
 
-    component_key = slug(component)
-    attribute_key = slug(attribute)
+    component_key = normalize_variable(slug(component))
+    attribute_key = normalize_variable(slug(attribute))
+
     numeric_value = float(value)
 
+    # Store full variable
     full_key = f"{component_key}_{attribute_key}"
     variables[full_key] = numeric_value
 
-    if attribute_key == "length":
-        variables[component_key] = numeric_value
+    # Store direct component variable
+    variables[component_key] = numeric_value
 
-    elif attribute_key in ["width", "height"] and attribute_key in component_key:
+    # Avoid duplicate suffix issue
+    if component_key.endswith(f"_{attribute_key}"):
         variables[component_key] = numeric_value
 
 
