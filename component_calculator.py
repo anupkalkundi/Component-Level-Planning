@@ -285,14 +285,6 @@ def normalize_formula_for_eval(formula, rules=None, variables=None):
     if not formula:
         return ""
 
-    formula = formula.replace(" ", "_")
-
-    formula = re.sub(
-        r'([a-zA-Z])\-([a-zA-Z])',
-        r'\1_\2',
-        formula
-    )
-
     if "=" in formula:
 
         left, right = formula.split("=", 1)
@@ -318,22 +310,16 @@ def normalize_formula_for_eval(formula, rules=None, variables=None):
 
     return formula
     
-def extract_formula_variables(formula, rules=None, variables=None):
-    formula = normalize_formula_for_eval(formula, rules or [], variables or {})
+def formula_dependencies_ready(formula, variables):
 
-    if not formula:
-        return []
+    vars_needed = extract_formula_variables(formula)
 
-    ignore_words = {"abs", "min", "max", "round", "float", "int", "Decimal"}
+    for var in vars_needed:
 
-    found = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", formula)
+        if var not in variables:
+            return False
 
-    return sorted({
-        normalize_variable(v)
-        for v in found
-        if v not in ignore_words
-    })
-
+    return True
 
 def evaluate_formula(formula, variables, rules):
     formula = normalize_formula_for_eval(formula, rules, variables)
@@ -584,6 +570,12 @@ def product_input_keys(product_cat, product_code, rules):
         formula = rule_value(rule, "formula")
 
         if rule_type in ["formula", "fomula"]:
+
+            if not formula_dependencies_ready(formula, house_variables):
+                next_pending.append(rule)
+                continue
+
+            value = evaluate_formula(formula, house_variables, rules)
             formula_vars.update(extract_formula_variables(formula, rules))
 
     formula_vars -= calculated_variable_keys(rules)
