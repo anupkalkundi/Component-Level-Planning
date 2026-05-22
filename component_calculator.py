@@ -10,10 +10,8 @@ class FormulaError(Exception):
 
 
 VARIABLE_ALIASES = {
-    "opening_height": "opening_length",
     "opening_l": "opening_length",
     "opening_w": "opening_width",
-    "height_opening": "opening_length",
     "width_opening": "opening_width",
     "clearance": "vertical_clearance",
     "clr": "vertical_clearance",
@@ -26,18 +24,16 @@ VARIABLE_ALIASES = {
     "frame_h_thk": "frame_horizontal_thickness",
     "frame_v_thk": "frame_vertical_thickness",
     "frame_horizontal_thicknes": "frame_horizontal_thickness",
-    "glass_shutter_width_top1": "glass_shutter_width_top_1",
-    "glass_shutter_width_top2": "glass_shutter_width_top_2",
-    "glass_shutter_width_bottom1": "glass_shutter_width_bottom_1",
-    "glass_shutter_width_bottom2": "glass_shutter_width_bottom_2",
-    "mesh_shutter_width_top1": "mesh_shutter_width_top_1",
-    "mesh_shutter_width_top2": "mesh_shutter_width_top_2",
-    "mesh_shutter_width_bottom1": "mesh_shutter_width_bottom_1",
-    "mesh_shutter_width_bottom2": "mesh_shutter_width_bottom_2",
-    "glass_shutter_width_topf1": "glass_shutter_width_top_f1",
-    "glass_shutter_width_topf2": "glass_shutter_width_top_f2",
-    "glass_shutter_width_bottomf1": "glass_shutter_width_bottom_f1",
-    "glass_shutter_width_bottomf2": "glass_shutter_width_bottom_f2",
+    "glass_shutter_width_top_1_length": "glass_shutter_width_top_1",
+    "glass_shutter_width_top_2_length": "glass_shutter_width_top_2",
+    "glass_shutter_width_bottom_1_length": "glass_shutter_width_bottom_1",
+    "glass_shutter_width_bottom_2_length": "glass_shutter_width_bottom_2",
+    "mesh_shutter_width_top_1_length": "mesh_shutter_width_top_1",
+    "mesh_shutter_width_top_2_length": "mesh_shutter_width_top_2",
+    "mesh_shutter_width_bottom_1_length": "mesh_shutter_width_bottom_1",
+    "mesh_shutter_width_bottom_2_length": "mesh_shutter_width_bottom_2",
+    "glass_beading_horizontal_1_length": "glass_beading_horizontal_1",
+    "glass_beading_horizontal_2_length": "glass_beading_horizontal_2",
 }
 
 
@@ -289,7 +285,14 @@ def normalize_formula_for_eval(formula, rules=None, variables=None):
     if not formula:
         return ""
 
-    # handle assignment formulas
+    formula = formula.replace(" ", "_")
+
+    formula = re.sub(
+        r'([a-zA-Z])\-([a-zA-Z])',
+        r'\1_\2',
+        formula
+    )
+
     if "=" in formula:
 
         left, right = formula.split("=", 1)
@@ -297,18 +300,12 @@ def normalize_formula_for_eval(formula, rules=None, variables=None):
         if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_ ]*\s*", left):
             formula = right.strip()
 
-    # normalize unicode dashes only
     formula = (
         formula
         .replace("–", "-")
         .replace("—", "-")
     )
 
-    # DO NOT replace operators
-    # DO NOT replace minus with underscore
-    # DO NOT slug entire formulas
-
-    # apply aliases only
     for old_var, new_var in VARIABLE_ALIASES.items():
 
         formula = re.sub(
@@ -317,7 +314,6 @@ def normalize_formula_for_eval(formula, rules=None, variables=None):
             formula
         )
 
-    # cleanup spaces
     formula = re.sub(r"\s+", " ", formula).strip()
 
     return formula
