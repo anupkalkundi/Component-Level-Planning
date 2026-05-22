@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 from decimal import Decimal
-from psycopg2.extras import execute_values, Json
+from psycopg2.extras import execute_values
 
 
 class FormulaError(Exception):
@@ -31,6 +31,10 @@ VARIABLE_ALIASES = {
 DEFAULT_VALUES = {
     "opening_length": 0.0,
     "opening_width": 0.0,
+    "opening_height_1": 0.0,
+    "opening_height_2": 0.0,
+    "opening_length_1": 0.0,
+    "opening_length_2": 0.0,
     "vertical_clearance": 0.0,
     "horizontal_clearance": 0.0,
     "architrave_extra_length": 0.0,
@@ -39,6 +43,7 @@ DEFAULT_VALUES = {
     "frame_vertical_thickness": 0.0,
     "lh_quantity": 0.0,
     "rh_quantity": 0.0,
+    "quantity": 0.0,
     "shutter_thickness": 0.0,
     "allowance": 0.0,
     "groove": 0.0,
@@ -57,6 +62,7 @@ COMPONENT_INPUT_KEYS = {
     "shutter_thickness",
     "lh_quantity",
     "rh_quantity",
+    "quantity",
 }
 
 
@@ -94,6 +100,43 @@ FIXED_COMPONENT_DIMENSIONS = {
         "thickness": Decimal("7.5"),
     },
 }
+
+
+def slug(value):
+    return (
+        str(value or "")
+        .strip()
+        .lower()
+        .replace(" ", "_")
+        .replace("-", "_")
+    )
+
+
+def label_from_key(key):
+    return str(key).replace("_", " ").title()
+
+
+def split_product_codes(product_code):
+    return [
+        code.strip()
+        for code in str(product_code or "").split(",")
+        if code.strip()
+    ]
+
+
+def product_uses_orientation(product_cat, product_code):
+    product_text = f"{product_cat} {product_code}".lower()
+    product_key = slug(product_text)
+
+    orientation_words = [
+        "door",
+        "door_window",
+        "doorwindow",
+        "doo_window",
+        "doowindow",
+    ]
+
+    return any(word in product_key for word in orientation_words)
 
 
 def normalize_variable(var_name):
@@ -147,7 +190,7 @@ def extract_formula_variables(formula):
         "round",
         "float",
         "int",
-        "Decimal"
+        "Decimal",
     }
 
     variables = re.findall(
@@ -194,16 +237,6 @@ def evaluate_formula(formula, variables):
 
     except Exception as e:
         raise FormulaError(str(e))
-
-
-def slug(value):
-    return (
-        str(value or "")
-        .strip()
-        .lower()
-        .replace(" ", "_")
-        .replace("-", "_")
-    )
 
 
 def clean_number(value):
@@ -277,10 +310,6 @@ def existing_component_input_key(component, attribute):
     return key if key in COMPONENT_INPUT_KEYS else None
 
 
-def is_architrave_component(component):
-    return slug(component) in ["architrave_vertical", "architrave_horizontal"]
-
-
 def apply_fixed_component_value(component, attribute, value):
     fixed_value_for_component = fixed_dimension_value(component, attribute)
 
@@ -347,6 +376,40 @@ def selected_component_manual_dimensions(rules):
                 manual_dimensions.append(item)
 
     return manual_dimensions
+
+
+def calculated_variable_keys(rules):
+    keys = set()
+
+    for component, attribute, _, _, _ in rules:
+        component_key = slug(component)
+        attribute_key = slug(attribute)
+
+        keys.add(component_key)
+        keys.add(f"{component_key}_{attribute_key}")
+
+    return keys
+
+
+def product_input_keys(rules, uses_orientation):
+    formula_vars = set()
+
+    for _, _, rule_type, formula, _ in rules:
+        if str(rule_type or "").strip().lower() in ["formula", "fomula"]:
+            formula_vars.update(extract_formula_variables(formula))
+
+    formula_vars -= calculated_variable_keys(rules)
+
+    if uses_orientation:
+        formula_vars.discard("quantity")
+        formula_vars.discard("lh_quantity")
+        formula_vars.discard("rh_quantity")
+    else:
+        formula_vars.discard("quantity")
+        formula_vars.discard("lh_quantity")
+        formula_vars.discard("rh_quantity")
+
+    return sorted(formula_vars)
 
 
 def store_calculated_value(variables, component, attribute, value):
@@ -449,8 +512,61 @@ def ensure_generated_components_table(conn, cur):
     conn.commit()
 
 
-def show_component_calculator(conn, cur):
+def load_product_rules(cur, product_cat, selected_product_code):
+    safe_execute(cur.connection, cur, """
+        SELECT
+            product_code,
+            component,
+            attribute,
+            type,
+            formula_used,
+            quantity
+        FROM product_component_rules
+        WHERE product_cat = %s
+    """, (product_cat,))
 
+    rows = cur.fetchall()
+
+    rules = []
+
+    for row in rows:
+        db_product_code = row[0]
+
+        if selected_product_code in split_product_codes(db_product_code):
+            rules.append(row[1:])
+
+    return rules
+
+
+def build_product_options(products):
+    options = []
+
+    for product_cat, product_code in products:
+        for single_code in split_product_codes(product_code):
+            options.append(f"{product_cat} | {single_code}")
+
+    return sorted(set(options))
+
+
+def reset_generated_state_if_product_changed(state_key):
+    previous_key = st.session_state.get("generated_component_product_state_key")
+
+    if previous_key and previous_key != state_key:
+        for key in [
+            "generated_component_preview",
+            "generated_component_tracking_rows",
+            "generated_component_errors",
+            "generated_lh_quantity",
+            "generated_rh_quantity",
+            "generated_total_quantity",
+            "generated_shutter_thickness",
+        ]:
+            st.session_state.pop(key, None)
+
+    st.session_state["generated_component_product_state_key"] = state_key
+
+
+def show_component_calculator(conn, cur):
     st.title("Component Calculator")
 
     ensure_generated_components_table(conn, cur)
@@ -510,119 +626,124 @@ def show_component_calculator(conn, cur):
         st.warning("No products found. Upload component architecture first.")
         return
 
-    product_options = [f"{p[0]} | {p[1]}" for p in products]
+    product_options = build_product_options(products)
 
     with col4:
         selected_product = st.selectbox("Product", product_options)
 
     product_cat, product_code = selected_product.split(" | ", 1)
+    uses_orientation = product_uses_orientation(product_cat, product_code)
 
-    safe_execute(conn, cur, """
-        SELECT
-            component,
-            attribute,
-            type,
-            formula_used,
-            quantity
-        FROM product_component_rules
-        WHERE product_cat = %s
-        AND product_code = %s
-    """, (product_cat, product_code))
+    state_key = f"{project_name}_{unit_type}_{product_cat}_{product_code}"
+    reset_generated_state_if_product_changed(state_key)
 
-    rules = cur.fetchall()
+    rules = load_product_rules(cur, product_cat, product_code)
 
     if not rules:
         st.warning("No component rules found for selected product.")
         return
 
     st.markdown("---")
-    st.subheader("House Wise LH / RH Quantity")
 
-    house_qty_df = pd.DataFrame({
-        "House Number": selected_houses,
-        "LH Quantity": [0 for _ in selected_houses],
-        "RH Quantity": [0 for _ in selected_houses],
-    })
+    house_qty_map = {}
 
-    edited_house_qty_df = st.data_editor(
-        house_qty_df,
-        use_container_width=True,
-        hide_index=True,
-        key=f"house_wise_lh_rh_qty_{product_cat}_{product_code}",
-        disabled=["House Number"]
-    )
+    if uses_orientation:
+        st.subheader("House Wise LH / RH Quantity")
 
-    house_qty_map = {
-        str(row["House Number"]): {
-            "lh_quantity": clean_int(row["LH Quantity"]),
-            "rh_quantity": clean_int(row["RH Quantity"]),
+        house_qty_df = pd.DataFrame({
+            "House Number": selected_houses,
+            "LH Quantity": [0 for _ in selected_houses],
+            "RH Quantity": [0 for _ in selected_houses],
+        })
+
+        edited_house_qty_df = st.data_editor(
+            house_qty_df,
+            use_container_width=True,
+            hide_index=True,
+            key=f"house_wise_lh_rh_qty_{state_key}",
+            disabled=["House Number"]
+        )
+
+        house_qty_map = {
+            str(row["House Number"]): {
+                "lh_quantity": clean_int(row["LH Quantity"]),
+                "rh_quantity": clean_int(row["RH Quantity"]),
+                "quantity": clean_int(row["LH Quantity"]) + clean_int(row["RH Quantity"]),
+            }
+            for _, row in edited_house_qty_df.iterrows()
         }
-        for _, row in edited_house_qty_df.iterrows()
-    }
 
-    total_lh_quantity = sum(
-        item["lh_quantity"]
-        for item in house_qty_map.values()
-    )
+        total_lh_quantity = sum(
+            item["lh_quantity"]
+            for item in house_qty_map.values()
+        )
 
-    total_rh_quantity = sum(
-        item["rh_quantity"]
-        for item in house_qty_map.values()
-    )
+        total_rh_quantity = sum(
+            item["rh_quantity"]
+            for item in house_qty_map.values()
+        )
 
-    st.info(
-        f"Total LH Quantity: {total_lh_quantity} | Total RH Quantity: {total_rh_quantity} | Total Quantity: {total_lh_quantity + total_rh_quantity}"
-    )
+        total_product_quantity = total_lh_quantity + total_rh_quantity
+
+        st.info(
+            f"Total LH Quantity: {total_lh_quantity} | Total RH Quantity: {total_rh_quantity} | Total Quantity: {total_product_quantity}"
+        )
+
+    else:
+        st.subheader("House Wise Quantity")
+
+        house_qty_df = pd.DataFrame({
+            "House Number": selected_houses,
+            "Quantity": [0 for _ in selected_houses],
+        })
+
+        edited_house_qty_df = st.data_editor(
+            house_qty_df,
+            use_container_width=True,
+            hide_index=True,
+            key=f"house_wise_qty_{state_key}",
+            disabled=["House Number"]
+        )
+
+        house_qty_map = {
+            str(row["House Number"]): {
+                "lh_quantity": 0,
+                "rh_quantity": 0,
+                "quantity": clean_int(row["Quantity"]),
+            }
+            for _, row in edited_house_qty_df.iterrows()
+        }
+
+        total_lh_quantity = 0
+        total_rh_quantity = 0
+        total_product_quantity = sum(
+            item["quantity"]
+            for item in house_qty_map.values()
+        )
+
+        st.info(f"Total Quantity: {total_product_quantity}")
 
     st.markdown("---")
     st.subheader("User Based Data")
 
     variables = {}
 
-    st.markdown("#### Opening Size")
-    open_col1, open_col2 = st.columns(2)
+    dynamic_input_keys = product_input_keys(rules, uses_orientation)
 
-    with open_col1:
-        variables["opening_length"] = st.number_input(
-            "Opening Length",
-            value=float(DEFAULT_VALUES["opening_length"]),
-            step=1.0,
-            format="%.2f",
-            key="input_opening_length"
-        )
+    if dynamic_input_keys:
+        input_cols = st.columns(4)
 
-    with open_col2:
-        variables["opening_width"] = st.number_input(
-            "Opening Width",
-            value=float(DEFAULT_VALUES["opening_width"]),
-            step=1.0,
-            format="%.2f",
-            key="input_opening_width"
-        )
-
-    st.markdown("#### Component Inputs")
-
-    input_fields = [
-        ("vertical_clearance", "Vertical Clearance"),
-        ("horizontal_clearance", "Horizontal Clearance"),
-        ("architrave_extra_length", "Architrave Extra Length"),
-        ("architrave_extra_width", "Architrave Extra Width"),
-        ("frame_horizontal_thickness", "Frame Horizontal Thickness"),
-        ("frame_vertical_thickness", "Frame Vertical Thickness"),
-        ("shutter_thickness", "Shutter Thickness"),
-    ]
-
-    input_cols = st.columns(4)
-
-    for idx, (key, label) in enumerate(input_fields):
-        with input_cols[idx % 4]:
-            variables[key] = st.number_input(
-                label,
-                value=float(DEFAULT_VALUES.get(key, 0.0)),
-                step=1.0,
-                format="%.2f",
-                key=f"input_{key}"
-            )
+        for idx, key in enumerate(dynamic_input_keys):
+            with input_cols[idx % 4]:
+                variables[key] = st.number_input(
+                    label_from_key(key),
+                    value=float(DEFAULT_VALUES.get(key, 0.0)),
+                    step=1.0,
+                    format="%.2f",
+                    key=f"input_{state_key}_{key}"
+                )
+    else:
+        st.info("No user based inputs required for this product.")
 
     manual_dimensions = selected_component_manual_dimensions(rules)
 
@@ -639,19 +760,19 @@ def show_component_calculator(conn, cur):
                     value=0.0,
                     step=1.0,
                     format="%.2f",
-                    key=f"manual_input_{slug(component)}_{slug(attribute)}_{idx}"
+                    key=f"manual_input_{state_key}_{slug(component)}_{slug(attribute)}_{idx}"
                 )
 
     st.markdown("---")
 
-    if st.button("Generate Components"):
+    if st.button("Generate Components", key=f"generate_components_{state_key}"):
 
         if not selected_houses:
             st.warning("Please select at least one house number.")
             return
 
         if not house_qty_map:
-            st.warning("Please enter house-wise LH/RH Quantity.")
+            st.warning("Please enter house-wise quantity.")
             return
 
         preview_rows = []
@@ -659,20 +780,20 @@ def show_component_calculator(conn, cur):
         errors_found = False
 
         for house_number in selected_houses:
-
             house_qty = house_qty_map.get(str(house_number), {})
             lh_quantity = int(float(house_qty.get("lh_quantity", 0)))
             rh_quantity = int(float(house_qty.get("rh_quantity", 0)))
-            product_qty_multiplier = lh_quantity + rh_quantity
+            product_qty_multiplier = int(float(house_qty.get("quantity", 0)))
 
             if product_qty_multiplier <= 0:
-                st.warning(f"Please enter LH Quantity or RH Quantity for house {house_number}.")
+                st.warning(f"Please enter quantity for house {house_number}.")
                 errors_found = True
                 continue
 
             house_variables = variables.copy()
             house_variables["lh_quantity"] = lh_quantity
             house_variables["rh_quantity"] = rh_quantity
+            house_variables["quantity"] = product_qty_multiplier
 
             pending_rules = list(rules)
             calculated_rules = []
@@ -744,6 +865,7 @@ def show_component_calculator(conn, cur):
                             "Total Quantity": total_quantity,
                             "LH Quantity": lh_quantity,
                             "RH Quantity": rh_quantity,
+                            "Quantity": product_qty_multiplier,
                         })
 
                         tracking_key = (
@@ -763,6 +885,9 @@ def show_component_calculator(conn, cur):
                                 "orientation": "",
                                 "component": component,
                                 "quantity": total_quantity,
+                                "lh_quantity": lh_quantity,
+                                "rh_quantity": rh_quantity,
+                                "product_quantity": product_qty_multiplier,
                                 "attributes": {}
                             }
 
@@ -812,6 +937,7 @@ def show_component_calculator(conn, cur):
                             "Total Quantity": int(component_qty * product_qty_multiplier),
                             "LH Quantity": lh_quantity,
                             "RH Quantity": rh_quantity,
+                            "Quantity": product_qty_multiplier,
                         })
 
                         missing = ", ".join(extract_formula_variables(formula))
@@ -855,6 +981,7 @@ def show_component_calculator(conn, cur):
                         "Total Quantity": row["quantity"],
                         "LH Quantity": lh_quantity,
                         "RH Quantity": rh_quantity,
+                        "Quantity": product_qty_multiplier,
                     })
 
             preview_rows.extend(calculated_rules)
@@ -865,6 +992,7 @@ def show_component_calculator(conn, cur):
         st.session_state["generated_component_errors"] = errors_found
         st.session_state["generated_lh_quantity"] = total_lh_quantity
         st.session_state["generated_rh_quantity"] = total_rh_quantity
+        st.session_state["generated_total_quantity"] = total_product_quantity
         st.session_state["generated_shutter_thickness"] = variables.get(
             "shutter_thickness",
             ""
@@ -876,10 +1004,14 @@ def show_component_calculator(conn, cur):
 
         generated_lh = st.session_state.get("generated_lh_quantity", 0)
         generated_rh = st.session_state.get("generated_rh_quantity", 0)
+        generated_total = st.session_state.get("generated_total_quantity", 0)
 
-        st.info(
-            f"Total LH Quantity: {generated_lh} | Total RH Quantity: {generated_rh} | Total Quantity: {generated_lh + generated_rh}"
-        )
+        if uses_orientation:
+            st.info(
+                f"Total LH Quantity: {generated_lh} | Total RH Quantity: {generated_rh} | Total Quantity: {generated_total}"
+            )
+        else:
+            st.info(f"Total Quantity: {generated_total}")
 
         df_preview_raw = pd.DataFrame(
             st.session_state["generated_component_preview"]
@@ -894,6 +1026,7 @@ def show_component_calculator(conn, cur):
             "Total Quantity",
             "LH Quantity",
             "RH Quantity",
+            "Quantity",
         ]
 
         for _, group_df in df_preview_raw.groupby(
@@ -943,110 +1076,52 @@ def show_component_calculator(conn, cur):
                 round_value=True
             )
 
-            cft_total_value = calculate_cft(
-                length_value,
-                width_value,
-                thickness_value,
-                first_row["Total Quantity"],
-                round_value=False
-            )
-
-            house_rows.append({
+            row_data = {
                 "House Number": first_row["House Number"],
                 "Product": first_row["Product"],
                 "Component": first_row["Component"],
                 "Length": length_value,
                 "Width": width_value,
                 "Thickness": thickness_value,
-                "Total Quantity": first_row["Total Quantity"],
-                "LH Quantity": first_row["LH Quantity"],
-                "RH Quantity": first_row["RH Quantity"],
-                "CFT": cft_value,
-                "CFT Raw": cft_total_value,
-            })
+            }
 
-        display_rows = []
+            if uses_orientation:
+                row_data["LH Quantity"] = first_row["LH Quantity"]
+                row_data["RH Quantity"] = first_row["RH Quantity"]
+            else:
+                row_data["Quantity"] = first_row["Quantity"]
 
-        df_house_rows = pd.DataFrame(house_rows)
+            row_data["Total Quantity"] = first_row["Total Quantity"]
+            row_data["CFT"] = cft_value
 
-        if not df_house_rows.empty:
-            aggregate_cols = [
-                "Product",
-                "Component",
-                "Length",
-                "Width",
-                "Thickness",
-            ]
-
-            for _, group_df in df_house_rows.groupby(
-                aggregate_cols,
-                dropna=False,
-                sort=False
-            ):
-                first_row = group_df.iloc[0].to_dict()
-
-                house_numbers = [
-                    str(value)
-                    for value in group_df["House Number"].tolist()
-                ]
-
-                lh_values = [
-                    f'{row["House Number"]}: {int(row["LH Quantity"])}'
-                    for _, row in group_df.iterrows()
-                ]
-
-                rh_values = [
-                    f'{row["House Number"]}: {int(row["RH Quantity"])}'
-                    for _, row in group_df.iterrows()
-                ]
-
-                total_quantity = sum(
-                    clean_int(value)
-                    for value in group_df["Total Quantity"].tolist()
-                )
-
-                total_cft_raw = sum(
-                    clean_number(value) or 0
-                    for value in group_df["CFT Raw"].tolist()
-                )
-
-                display_rows.append({
-                    "House Number": "\n".join(house_numbers),
-                    "Product": first_row["Product"],
-                    "Component": first_row["Component"],
-                    "Length": first_row["Length"],
-                    "Width": first_row["Width"],
-                    "Thickness": first_row["Thickness"],
-                    "LH Quantity": "\n".join(lh_values),
-                    "RH Quantity": "\n".join(rh_values),
-                    "Total Quantity": total_quantity,
-                    "CFT": Decimal(str(round(total_cft_raw, 2))),
-                    "CFT Raw": total_cft_raw,
-                })
+            house_rows.append(row_data)
 
         total_cft = sum(
-            clean_number(row.get("CFT Raw")) or 0
-            for row in display_rows
+            clean_number(row.get("CFT")) or 0
+            for row in house_rows
         )
 
-        display_rows.append({
+        total_row = {
             "House Number": "",
             "Product": "",
             "Component": "CFT Total",
             "Length": "",
             "Width": "",
             "Thickness": "",
-            "LH Quantity": "",
-            "RH Quantity": "",
-            "Total Quantity": "",
-            "CFT": Decimal(str(round(total_cft, 2))),
-            "CFT Raw": total_cft,
-        })
+        }
 
-        df_preview = pd.DataFrame(display_rows)
+        if uses_orientation:
+            total_row["LH Quantity"] = ""
+            total_row["RH Quantity"] = ""
+        else:
+            total_row["Quantity"] = ""
 
-        if "CFT Raw" in df_preview.columns:
-            df_preview = df_preview.drop(columns=["CFT Raw"])
+        total_row["Total Quantity"] = ""
+        total_row["CFT"] = Decimal(str(round(total_cft, 2)))
+
+        house_rows.append(total_row)
+
+        df_preview = pd.DataFrame(house_rows)
 
         st.dataframe(
             df_preview,
@@ -1066,7 +1141,11 @@ def show_component_calculator(conn, cur):
 
         st.markdown("---")
 
-        if st.button("Confirm Components and Send to Tracking", type="primary"):
+        if st.button(
+            "Confirm Components and Send to Tracking",
+            type="primary",
+            key=f"confirm_components_{state_key}"
+        ):
 
             if errors_found or df_preview_raw["Value"].isna().any():
                 st.warning("Please fix formula errors before sending to tracking.")
