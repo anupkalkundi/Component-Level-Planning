@@ -232,9 +232,11 @@ def load_product_rules(conn, cur, product_cat, selected_product_code):
         select_cols.append("NULL AS fixed_thickness")
 
     query = f"""
-        SELECT {", ".join(select_cols)}
+        SELECT {", ".join(select_cols)},
+               execution_order
         FROM product_component_rules
         WHERE {product_cat_col} = %s
+        ORDER BY execution_order, id
     """
 
     safe_execute(conn, cur, query, (product_cat,))
@@ -280,88 +282,37 @@ def build_product_options(products):
     return sorted(set(options))
 
 
-def formula_known_keys(rules, variables=None):
-    variables = variables or {}
-    keys = set(DEFAULT_VALUES.keys())
-    keys.update(variables.keys())
+def normalize_formula_for_eval(formula, rules=None, variables=None):
 
-    for rule in rules:
-        component = rule_value(rule, "component")
-        attribute = rule_value(rule, "attribute")
+    formula = str(formula or "").strip().lower()
 
-        component_key = slug(component)
-        attribute_key = slug(attribute)
+    if not formula:
+        return ""
 
-        keys.add(component_key)
-        keys.add(f"{component_key}_{attribute_key}")
+    # Handle formulas like:
+    # width = opening_width - 50
+    if "=" in formula:
 
-        # FIX 2: also register the normalised/aliased form of the component key
-        # so that _f1/_f2 variants (e.g. glass_shutter_width_top_f1) are always
-        # recognised as a single token and never split by repair_joined_formula_tokens
-        normalized_component_key = normalize_variable(component_key)
-        if normalized_component_key != component_key:
-            keys.add(normalized_component_key)
-            keys.add(f"{normalized_component_key}_{attribute_key}")
+        left, right = formula.split("=", 1)
 
-    return sorted(keys, key=len, reverse=True)
+        if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_ ]*\s*", left):
+            formula = right.strip()
 
+    # Standardize separators
+    formula = formula.replace("-", "_")
+    formula = formula.replace(" ", "_")
 
-def split_joined_formula_token(token, known_keys):
-    token = normalize_variable(token)
+    # Apply aliases
+    for old_var, new_var in VARIABLE_ALIASES.items():
 
-    if token in known_keys:
-        return None
+        formula = re.sub(
+            rf"\b{re.escape(old_var)}\b",
+            new_var,
+            formula
+        )
 
-    parts = []
-    remaining = token
-
-    while remaining:
-        match = None
-
-        for key in known_keys:
-            if remaining == key:
-                match = key
-                break
-
-            if remaining.startswith(key + "_"):
-                match = key
-                break
-
-        if not match:
-            return None
-
-        parts.append(match)
-
-        if remaining == match:
-            remaining = ""
-        else:
-            remaining = remaining[len(match) + 1:]
-
-    if len(parts) <= 1:
-        return None
-
-    return parts
-
-
-def operator_between(left, right):
-    right_key = str(right).lower()
-
-    if "extra" in right_key:
-        return "+"
-
-    return "-"
-
-
-def joined_parts_to_formula(parts):
-    expression = parts[0]
-
-    for part in parts[1:]:
-        expression += f" {operator_between(expression, part)} {part}"
-
-    return expression
-
-
-def repair_joined_formula_tokens(formula, rules, variables=None):
+    return formula
+    
     variables = variables or {}
     known_keys = formula_known_keys(rules, variables)
 
@@ -1104,7 +1055,13 @@ def show_component_calculator(conn, cur):
 
                     try:
                         if rule_type in ["formula", "fomula"]:
-                            value = evaluate_formula(formula, house_variables, rules)
+
+                           st.write("COMPONENT:", component)
+                           st.write("ATTRIBUTE:", attribute)
+                           st.write("FORMULA:", formula)
+                           st.write("AVAILABLE VARIABLES:", house_variables)
+
+                           value = evaluate_formula(formula, house_variables, rules)
 
                         elif needs_manual_dimension(rule, rules):
                             value = get_dimension_value(component, attribute, variables, rules)
