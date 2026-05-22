@@ -298,8 +298,22 @@ def normalize_formula_for_eval(formula, rules=None, variables=None):
         if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_ ]*\s*", left):
             formula = right.strip()
 
-    # normalize spaces only
-    formula = re.sub(r"\s+", " ", formula)
+    # normalize unicode dashes
+    formula = (
+        formula
+        .replace("–", "-")
+        .replace("—", "-")
+    )
+
+    # normalize spacing around operators
+    formula = re.sub(
+        r"\s*([\+\-\*/\(\)])\s*",
+        r" \1 ",
+        formula
+    )
+
+    # collapse extra spaces
+    formula = re.sub(r"\s+", " ", formula).strip()
 
     # Apply aliases
     for old_var, new_var in VARIABLE_ALIASES.items():
@@ -311,7 +325,6 @@ def normalize_formula_for_eval(formula, rules=None, variables=None):
         )
 
     return formula
-
 def extract_formula_variables(formula, rules=None, variables=None):
     formula = normalize_formula_for_eval(formula, rules or [], variables or {})
 
@@ -334,9 +347,6 @@ def evaluate_formula(formula, variables, rules):
 
     if not formula:
         raise FormulaError("Formula empty")
-
-    if re.search(r"[A-Za-z_][A-Za-z0-9_]*\s+[A-Za-z_][A-Za-z0-9_]*", formula):
-        raise FormulaError(f"Invalid formula syntax: {formula}")
 
     clean_vars = {}
 
@@ -651,9 +661,8 @@ def store_calculated_value(variables, component, attribute, value):
     #   - length   → always writes the bare key (primary dimension)
     #   - anything else → writes the bare key only if it has not been set yet
     #     (safe first-seen fallback, preserves door product behaviour)
-    if attribute_key == "length":
-        variables[component_key] = numeric_value
-    elif component_key not in variables:
+    # store primary alias only once
+    if component_key not in variables:
         variables[component_key] = numeric_value
 
 
@@ -987,12 +996,7 @@ def show_component_calculator(conn, cur):
 
                     try:
                         if rule_type in ["formula", "fomula"]:
-
-                           st.write("COMPONENT:", component)
-                           st.write("ATTRIBUTE:", attribute)
-                           st.write("FORMULA:", formula)
-                           st.write("AVAILABLE VARIABLES:", house_variables)
-
+                            
                            value = evaluate_formula(formula, house_variables, rules)
 
                         elif needs_manual_dimension(rule, rules):
