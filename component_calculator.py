@@ -295,6 +295,14 @@ def formula_known_keys(rules, variables=None):
         keys.add(component_key)
         keys.add(f"{component_key}_{attribute_key}")
 
+        # FIX 2: also register the normalised/aliased form of the component key
+        # so that _f1/_f2 variants (e.g. glass_shutter_width_top_f1) are always
+        # recognised as a single token and never split by repair_joined_formula_tokens
+        normalized_component_key = normalize_variable(component_key)
+        if normalized_component_key != component_key:
+            keys.add(normalized_component_key)
+            keys.add(f"{normalized_component_key}_{attribute_key}")
+
     return sorted(keys, key=len, reverse=True)
 
 
@@ -500,12 +508,16 @@ def conditional_quantity(quantity, variables):
     if number is not None:
         return int(number)
 
-    if "mesh yes" in text and "mesh no" in text:
-        yes_match = re.search(r"mesh\s*yes\s*:\s*([0-9.]+)", text)
-        no_match = re.search(r"mesh\s*no\s*:\s*([0-9.]+)", text)
+    # FIX 3: correctly parse "If Mesh Yes: 2, If Mesh No: 0" pattern.
+    # Original used `and` so both substrings had to be present; also the
+    # regex was too strict. Now triggers on either keyword and accepts
+    # optional "if" prefix and colon-or-dash separators.
+    if "mesh yes" in text or "mesh no" in text:
+        yes_match = re.search(r"mesh\s*yes\s*[:\-]?\s*([0-9.]+)", text)
+        no_match  = re.search(r"mesh\s*no\s*[:\-]?\s*([0-9.]+)", text)
 
         yes_qty = int(float(yes_match.group(1))) if yes_match else 0
-        no_qty = int(float(no_match.group(1))) if no_match else 0
+        no_qty  = int(float(no_match.group(1)))  if no_match  else 0
 
         return yes_qty if int(variables.get("mesh_yes", 0)) == 1 else no_qty
 
@@ -743,18 +755,22 @@ def store_calculated_value(variables, component, attribute, value):
 
     component_key = normalize_variable(slug(component))
     attribute_key = normalize_variable(slug(attribute))
-
     numeric_value = float(value)
 
-    # Store full variable
+    # Always store the fully-qualified key e.g. glass_shutter_width_top_1_width
     full_key = f"{component_key}_{attribute_key}"
     variables[full_key] = numeric_value
 
-    # Store direct component variable
-    variables[component_key] = numeric_value
-
-    # Avoid duplicate suffix issue
-    if component_key.endswith(f"_{attribute_key}"):
+    # FIX 1: only write the bare component key (e.g. glass_shutter_width_top_1)
+    # when the attribute is 'length'.  Previously every attribute overwrote it,
+    # so a later width/thickness rule silently clobbered the length value that
+    # downstream formulas depend on.  Now:
+    #   - length   → always writes the bare key (primary dimension)
+    #   - anything else → writes the bare key only if it has not been set yet
+    #     (safe first-seen fallback, preserves door product behaviour)
+    if attribute_key == "length":
+        variables[component_key] = numeric_value
+    elif component_key not in variables:
         variables[component_key] = numeric_value
 
 
@@ -819,16 +835,6 @@ def ensure_generated_components_table(conn, cur):
     """)
 
     conn.commit()
-
-
-def build_product_options(products):
-    options = []
-
-    for product_cat, product_code in products:
-        for single_code in split_product_codes(product_code):
-            options.append(f"{product_cat} | {single_code}")
-
-    return sorted(set(options))
 
 
 def reset_generated_state_if_product_changed(state_key):
