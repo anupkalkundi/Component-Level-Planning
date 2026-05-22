@@ -298,9 +298,8 @@ def normalize_formula_for_eval(formula, rules=None, variables=None):
         if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_ ]*\s*", left):
             formula = right.strip()
 
-    # Standardize separators
-    formula = formula.replace("-", "_")
-    formula = formula.replace(" ", "_")
+    # normalize spaces only
+    formula = re.sub(r"\s+", " ", formula)
 
     # Apply aliases
     for old_var, new_var in VARIABLE_ALIASES.items():
