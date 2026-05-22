@@ -675,7 +675,7 @@ def store_calculated_value(variables, component, attribute, value):
     full_key = f"{component_key}_{attribute_key}"
     variables[full_key] = numeric_value
 
-    if attribute_key == "length" or attribute_key == "height":
+    if attribute_key in ["length", "height"]:
         variables[component_key] = numeric_value
     elif component_key not in variables:
         variables[component_key] = numeric_value
@@ -1080,18 +1080,18 @@ def show_component_calculator(conn, cur):
                     errors_found = True
                     st.error(f"{house_number} - {component} / {attribute}: {e}")
 
-            # Pull explicit user configurations cleanly without loss of tracking keys
+            # Safe parsing layout backfill to guarantee dimensions match mathematically 
             for row in component_tracking_map.values():
                 for attr_type in ["width", "thickness"]:
-                    # Fetch dimensions safely from config fallback
-                    dim_val = get_dimension_value(row["component"], attr_type, house_variables, rules)
-                    if dim_val is not None:
-                        row["attributes"][attr_type] = {
-                            "type": "dimension",
-                            "formula": "",
-                            "value": float(dim_val),
-                            "base_quantity": row["quantity"] / product_qty_multiplier
-                        }
+                    if attr_type not in row["attributes"]:
+                        dim_val = get_dimension_value(row["component"], attr_type, house_variables, rules)
+                        if dim_val is not None:
+                            row["attributes"][attr_type] = {
+                                "type": "dimension",
+                                "formula": "",
+                                "value": float(dim_val),
+                                "base_quantity": row["quantity"] / product_qty_multiplier
+                            }
 
             preview_rows.extend(calculated_rules)
             tracking_rows.extend(component_tracking_map.values())
@@ -1106,23 +1106,28 @@ def show_component_calculator(conn, cur):
     if "generated_component_preview" in st.session_state:
         st.subheader("Generated Components")
 
-        df_preview_raw = pd.DataFrame(st.session_state["generated_component_preview"])
-        house_rows = []
-
         tracking_rows = st.session_state.get("generated_component_tracking_rows", [])
+        house_rows = []
 
         for row in tracking_rows:
             attrs = row["attributes"]
             
-            # Map values dynamically based on what was computed or fallback configurations
-            length_val = attrs.get("length", attrs.get("height", {})) .get("value", "")
+            # Map values gracefully depending on naming contexts inside rules
+            length_val = attrs.get("length", attrs.get("height", attrs.get("formula", {}))).get("value", "")
             width_val = attrs.get("width", {}).get("value", "")
             thickness_val = attrs.get("thickness", {}).get("value", "")
 
-            # Fix up zero/empty states using standard database rules parameters safely
-            if width_val == "":
+            # If a keyword match incorrectly swallowed the context, backfill it properly
+            if length_val == "":
+                # Use calculated token value from any available slot as the core dimension length
+                for k in attrs.keys():
+                    if attrs[k].get("value") is not None:
+                        length_val = attrs[k]["value"]
+                        break
+
+            if width_val == "" or width_val == 0.0:
                 width_val = float(get_dimension_value(row["component"], "width", variables, rules) or 0)
-            if thickness_val == "":
+            if thickness_val == "" or thickness_val == 0.0:
                 thickness_val = float(get_dimension_value(row["component"], "thickness", variables, rules) or 0)
 
             cft_value = calculate_cft(length_val, width_val, thickness_val, row["quantity"], round_value=True)
@@ -1215,7 +1220,7 @@ def show_component_calculator(conn, cur):
                         "Pending",
                     ))
 
-                # Wipe instances clean to prevent tracking duplication crashes
+                # Wipe database old instances out of layout to handle overwrites clearly
                 for row in house_rows:
                     if row["Component"] == "CFT Total":
                         continue
