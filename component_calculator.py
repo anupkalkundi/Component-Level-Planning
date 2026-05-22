@@ -1080,19 +1080,6 @@ def show_component_calculator(conn, cur):
                     errors_found = True
                     st.error(f"{house_number} - {component} / {attribute}: {e}")
 
-            # Safe parsing layout backfill to guarantee dimensions match mathematically 
-            for row in component_tracking_map.values():
-                for attr_type in ["width", "thickness"]:
-                    if attr_type not in row["attributes"]:
-                        dim_val = get_dimension_value(row["component"], attr_type, house_variables, rules)
-                        if dim_val is not None:
-                            row["attributes"][attr_type] = {
-                                "type": "dimension",
-                                "formula": "",
-                                "value": float(dim_val),
-                                "base_quantity": row["quantity"] / product_qty_multiplier
-                            }
-
             preview_rows.extend(calculated_rules)
             tracking_rows.extend(component_tracking_map.values())
 
@@ -1111,24 +1098,39 @@ def show_component_calculator(conn, cur):
 
         for row in tracking_rows:
             attrs = row["attributes"]
-            
-            # Map values gracefully depending on naming contexts inside rules
-            length_val = attrs.get("length", attrs.get("height", attrs.get("formula", {}))).get("value", "")
-            width_val = attrs.get("width", {}).get("value", "")
-            thickness_val = attrs.get("thickness", {}).get("value", "")
+            comp_name_lower = row["component"].lower()
 
-            # If a keyword match incorrectly swallowed the context, backfill it properly
-            if length_val == "":
-                # Use calculated token value from any available slot as the core dimension length
-                for k in attrs.keys():
-                    if attrs[k].get("value") is not None:
-                        length_val = attrs[k]["value"]
-                        break
+            # Base variables fallback sequence
+            calculated_val = 0.0
+            for attr_k in attrs.keys():
+                if attrs[attr_k].get("value") is not None:
+                    calculated_val = float(attrs[attr_k]["value"])
+                    break
 
-            if width_val == "" or width_val == 0.0:
-                width_val = float(get_dimension_value(row["component"], "width", variables, rules) or 0)
-            if thickness_val == "" or thickness_val == 0.0:
-                thickness_val = float(get_dimension_value(row["component"], "thickness", variables, rules) or 0)
+            # Smart parsing logic that overrides database attribute classification bugs
+            if "width" in comp_name_lower or "beading" in comp_name_lower:
+                # If the component specifies a width string, assign the formula to width and resolve fallback lengths
+                width_val = calculated_val
+                length_val = float(variables.get("opening_length", variables.get("opening_height_1", 0.0)))
+                thickness_val = float(variables.get("shutter_thickness", variables.get("frame_horizontal_thickness", 0.0)))
+            else:
+                # Default case: Calculated value behaves cleanly as the item Length
+                length_val = calculated_val
+                width_val = float(get_dimension_value(row["component"], "width", variables, rules) or 0.0)
+                thickness_val = float(get_dimension_value(row["component"], "thickness", variables, rules) or 0.0)
+
+            # Pull explicit fixed overrides from code maps if available
+            fixed_map = FIXED_COMPONENT_DIMENSIONS.get(slug(row["component"]), {})
+            if "width" in fixed_map:
+                width_val = float(fixed_map["width"])
+            if "thickness" in fixed_map:
+                thickness_val = float(fixed_map["thickness"])
+
+            # Final safety check against zero multipliers
+            if width_val == 0.0:
+                width_val = float(variables.get("frame_horizontal_thickness", 110.0))
+            if thickness_val == 0.0:
+                thickness_val = float(variables.get("shutter_thickness", 62.0))
 
             cft_value = calculate_cft(length_val, width_val, thickness_val, row["quantity"], round_value=True)
 
@@ -1136,9 +1138,9 @@ def show_component_calculator(conn, cur):
                 "House Number": row["house_number"],
                 "Product": row["product_code"],
                 "Component": row["component"],
-                "Length": length_val,
-                "Width": width_val,
-                "Thickness": thickness_val,
+                "Length": round(length_val, 2) if length_val else "",
+                "Width": round(width_val, 2) if width_val else "",
+                "Thickness": round(thickness_val, 2) if thickness_val else "",
                 "Total Quantity": row["quantity"],
                 "CFT": cft_value,
             }
@@ -1203,8 +1205,8 @@ def show_component_calculator(conn, cur):
                         row["Component"],
                         "combined",
                         str(row["Length"]),
-                        row["Width"],
-                        row["Thickness"],
+                        row["Width"] if row["Width"] != "" else None,
+                        row["Thickness"] if row["Thickness"] != "" else None,
                         row["CFT"],
                         "",
                         row["Total Quantity"],
@@ -1220,7 +1222,6 @@ def show_component_calculator(conn, cur):
                         "Pending",
                     ))
 
-                # Wipe database old instances out of layout to handle overwrites clearly
                 for row in house_rows:
                     if row["Component"] == "CFT Total":
                         continue
