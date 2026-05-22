@@ -76,20 +76,6 @@ COMPONENT_INPUT_KEYS = {
 }
 
 
-FIXED_COMPONENT_DIMENSIONS = {
-    "architrave_vertical": {"width": Decimal("40"), "thickness": Decimal("12")},
-    "architrave_horizontal": {"width": Decimal("40"), "thickness": Decimal("12")},
-    "architrave_vertical_front": {"width": Decimal("40"), "thickness": Decimal("12")},
-    "architrave_horizontal_front": {"width": Decimal("40"), "thickness": Decimal("12")},
-    "door_frame_vertical_beading": {"width": Decimal("27"), "thickness": Decimal("11")},
-    "door_frame_horizontal_beading": {"width": Decimal("27"), "thickness": Decimal("11")},
-    "door_frame_vertical_beading_1": {"width": Decimal("15"), "thickness": Decimal("7")},
-    "door_frame_horizontal_beading_1": {"width": Decimal("15"), "thickness": Decimal("7")},
-    "door_frame_horizontal_beading_2": {"width": Decimal("20"), "thickness": Decimal("8")},
-    "louver": {"width": Decimal("41.5"), "thickness": Decimal("7.5")},
-}
-
-
 def slug(value):
     return str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
 
@@ -216,12 +202,12 @@ def load_product_rules(conn, cur, product_cat, selected_product_code):
     ]
 
     if width_col:
-        select_cols.append(f"{width_col} AS fixed_width")
+        select_cols.append(f"CAST({width_col} AS NUMERIC) AS fixed_width")
     else:
         select_cols.append("NULL AS fixed_width")
 
     if thickness_col:
-        select_cols.append(f"{thickness_col} AS fixed_thickness")
+        select_cols.append(f"CAST({thickness_col} AS NUMERIC) AS fixed_thickness")
     else:
         select_cols.append("NULL AS fixed_thickness")
 
@@ -485,10 +471,6 @@ def manual_dimension_key(component, attribute):
     return f"manual_{slug(component)}_{slug(attribute)}"
 
 
-def fixed_dimension_value(component, attribute):
-    return FIXED_COMPONENT_DIMENSIONS.get(slug(component), {}).get(slug(attribute))
-
-
 def uploaded_dimension_value(rules, component, attribute):
     component_key = slug(component)
     attribute_key = slug(attribute)
@@ -521,10 +503,7 @@ def existing_component_input_key(component, attribute):
 
 
 def has_fixed_or_uploaded_dimension(rules, component, attribute):
-    return (
-        fixed_dimension_value(component, attribute) is not None
-        or uploaded_dimension_value(rules, component, attribute) is not None
-    )
+    return uploaded_dimension_value(rules, component, attribute) is not None
 
 
 def needs_manual_dimension(rule, rules):
@@ -635,10 +614,6 @@ def product_input_keys(product_cat, product_code, rules):
 
 
 def get_dimension_value(component, attribute, variables, rules):
-    fixed = fixed_dimension_value(component, attribute)
-    if fixed is not None:
-        return fixed
-
     uploaded = uploaded_dimension_value(rules, component, attribute)
     if uploaded is not None:
         return uploaded
@@ -654,10 +629,6 @@ def get_dimension_value(component, attribute, variables, rules):
 
 
 def apply_fixed_or_uploaded_component_value(component, attribute, value, rules):
-    fixed = fixed_dimension_value(component, attribute)
-    if fixed is not None:
-        return fixed
-
     uploaded = uploaded_dimension_value(rules, component, attribute)
     if uploaded is not None and slug(attribute) in ["width", "thickness"]:
         return uploaded
@@ -1100,39 +1071,33 @@ def show_component_calculator(conn, cur):
             attrs = row["attributes"]
             comp_name_lower = row["component"].lower()
 
-            # Base variables fallback sequence
-            calculated_val = 0.0
+            # 1. Grab calculated formula result if one exists
+            calculated_val = None
             for attr_k in attrs.keys():
                 if attrs[attr_k].get("value") is not None:
                     calculated_val = float(attrs[attr_k]["value"])
                     break
 
-            # Smart parsing logic that overrides database attribute classification bugs
-            if "width" in comp_name_lower or "beading" in comp_name_lower:
-                # If the component specifies a width string, assign the formula to width and resolve fallback lengths
-                width_val = calculated_val
-                length_val = float(variables.get("opening_length", variables.get("opening_height_1", 0.0)))
-                thickness_val = float(variables.get("shutter_thickness", variables.get("frame_horizontal_thickness", 0.0)))
-            else:
-                # Default case: Calculated value behaves cleanly as the item Length
+            # 2. Extract configuration widths/thicknesses directly from master rules sheet
+            fixed_width = float(uploaded_dimension_value(rules, row["component"], "width") or 0.0)
+            fixed_thickness = float(uploaded_dimension_value(rules, row["component"], "thickness") or 0.0)
+
+            # 3. Structural Routing: Determine columns via naming text strings instead of structural attributes
+            if "width" in comp_name_lower:
+                width_val = calculated_val if calculated_val is not None else fixed_width
+                length_val = None  # Leave blank if it's strictly a width-only tracking item
+                thickness_val = fixed_thickness
+            elif "height" in comp_name_lower or "vertical" in comp_name_lower or "beam" in comp_name_lower:
                 length_val = calculated_val
-                width_val = float(get_dimension_value(row["component"], "width", variables, rules) or 0.0)
-                thickness_val = float(get_dimension_value(row["component"], "thickness", variables, rules) or 0.0)
+                width_val = fixed_width
+                thickness_val = fixed_thickness
+            else:
+                # Fallback layout context
+                length_val = calculated_val
+                width_val = fixed_width
+                thickness_val = fixed_thickness
 
-            # Pull explicit fixed overrides from code maps if available
-            fixed_map = FIXED_COMPONENT_DIMENSIONS.get(slug(row["component"]), {})
-            if "width" in fixed_map:
-                width_val = float(fixed_map["width"])
-            if "thickness" in fixed_map:
-                thickness_val = float(fixed_map["thickness"])
-
-            # Final safety check against zero multipliers
-            if width_val == 0.0:
-                width_val = float(variables.get("frame_horizontal_thickness", 110.0))
-            if thickness_val == 0.0:
-                thickness_val = float(variables.get("shutter_thickness", 62.0))
-
-            cft_value = calculate_cft(length_val, width_val, thickness_val, row["quantity"], round_value=True)
+            cft_value = calculate_cft(length_val or 0.0, width_val or 0.0, thickness_val or 0.0, row["quantity"], round_value=True)
 
             row_data = {
                 "House Number": row["house_number"],
@@ -1142,7 +1107,7 @@ def show_component_calculator(conn, cur):
                 "Width": round(width_val, 2) if width_val else "",
                 "Thickness": round(thickness_val, 2) if thickness_val else "",
                 "Total Quantity": row["quantity"],
-                "CFT": cft_value,
+                "CFT": cft_value if (length_val and width_val and thickness_val) else Decimal("0.00"),
             }
 
             if uses_orientation:
@@ -1204,9 +1169,9 @@ def show_component_calculator(conn, cur):
                         row["Product"],
                         row["Component"],
                         "combined",
-                        str(row["Length"]),
-                        row["Width"] if row["Width"] != "" else None,
-                        row["Thickness"] if row["Thickness"] != "" else None,
+                        str(row["Length"]) if row["Length"] != "" else None,
+                        float(row["Width"]) if row["Width"] != "" else None,
+                        float(row["Thickness"]) if row["Thickness"] != "" else None,
                         row["CFT"],
                         "",
                         row["Total Quantity"],
