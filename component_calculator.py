@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 from decimal import Decimal
-from psycopg2.extras import execute_values
+from psycopg2.extras import execute_values, Json
 
 
 class FormulaError(Exception):
@@ -96,17 +96,6 @@ FIXED_COMPONENT_DIMENSIONS = {
 }
 
 
-FORMULA_FUNCTION_NAMES = {
-    "abs",
-    "min",
-    "max",
-    "round",
-    "float",
-    "int",
-    "Decimal",
-}
-
-
 def normalize_variable(var_name):
     var_name = str(var_name).strip()
     return VARIABLE_ALIASES.get(var_name, var_name)
@@ -117,7 +106,6 @@ def normalize_formula(formula):
 
     if "=" in formula:
         left, right = formula.split("=", 1)
-
         if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_]*\s*", left):
             formula = right.strip()
 
@@ -152,6 +140,16 @@ def extract_formula_variables(formula):
     if not formula:
         return []
 
+    ignore_words = {
+        "abs",
+        "min",
+        "max",
+        "round",
+        "float",
+        "int",
+        "Decimal"
+    }
+
     variables = re.findall(
         r"\b[A-Za-z_][A-Za-z0-9_]*\b",
         formula
@@ -160,7 +158,7 @@ def extract_formula_variables(formula):
     return sorted({
         normalize_variable(v)
         for v in variables
-        if v not in FORMULA_FUNCTION_NAMES
+        if v not in ignore_words
     })
 
 
@@ -206,10 +204,6 @@ def slug(value):
         .replace(" ", "_")
         .replace("-", "_")
     )
-
-
-def labelize_key(key):
-    return str(key or "").replace("_", " ").title()
 
 
 def clean_number(value):
@@ -283,6 +277,10 @@ def existing_component_input_key(component, attribute):
     return key if key in COMPONENT_INPUT_KEYS else None
 
 
+def is_architrave_component(component):
+    return slug(component) in ["architrave_vertical", "architrave_horizontal"]
+
+
 def apply_fixed_component_value(component, attribute, value):
     fixed_value_for_component = fixed_dimension_value(component, attribute)
 
@@ -290,57 +288,6 @@ def apply_fixed_component_value(component, attribute, value):
         return fixed_value_for_component
 
     return value
-
-
-def is_formula_type(rule_type):
-    return str(rule_type or "").strip().lower() in ["formula", "fomula"]
-
-
-def rule_output_keys(component, attribute):
-    component_key = slug(component)
-    attribute_key = slug(attribute)
-
-    return {
-        component_key,
-        f"{component_key}_{attribute_key}",
-    }
-
-
-def product_calculated_keys(rules):
-    keys = set()
-
-    for component, attribute, *_ in rules:
-        keys.update(rule_output_keys(component, attribute))
-
-    return keys
-
-
-def product_user_input_keys(rules):
-    calculated_keys = product_calculated_keys(rules)
-    required_inputs = set()
-
-    for component, attribute, rule_type, formula, _ in rules:
-        input_key = existing_component_input_key(component, attribute)
-
-        if input_key:
-            required_inputs.add(input_key)
-
-        if is_formula_type(rule_type):
-            for variable in extract_formula_variables(formula):
-                variable = normalize_variable(variable)
-
-                if variable in FORMULA_FUNCTION_NAMES:
-                    continue
-
-                if variable in calculated_keys:
-                    continue
-
-                if variable in ["lh_quantity", "rh_quantity"]:
-                    continue
-
-                required_inputs.add(variable)
-
-    return sorted(required_inputs)
 
 
 def needs_manual_dimension(rule):
@@ -588,8 +535,6 @@ def show_component_calculator(conn, cur):
         st.warning("No component rules found for selected product.")
         return
 
-    required_input_keys_all = product_user_input_keys(rules)
-
     st.markdown("---")
     st.subheader("House Wise LH / RH Quantity")
 
@@ -634,53 +579,50 @@ def show_component_calculator(conn, cur):
 
     variables = {}
 
-    opening_keys = [
-        key for key in ["opening_length", "opening_width"]
-        if key in required_input_keys_all
+    st.markdown("#### Opening Size")
+    open_col1, open_col2 = st.columns(2)
+
+    with open_col1:
+        variables["opening_length"] = st.number_input(
+            "Opening Length",
+            value=float(DEFAULT_VALUES["opening_length"]),
+            step=1.0,
+            format="%.2f",
+            key="input_opening_length"
+        )
+
+    with open_col2:
+        variables["opening_width"] = st.number_input(
+            "Opening Width",
+            value=float(DEFAULT_VALUES["opening_width"]),
+            step=1.0,
+            format="%.2f",
+            key="input_opening_width"
+        )
+
+    st.markdown("#### Component Inputs")
+
+    input_fields = [
+        ("vertical_clearance", "Vertical Clearance"),
+        ("horizontal_clearance", "Horizontal Clearance"),
+        ("architrave_extra_length", "Architrave Extra Length"),
+        ("architrave_extra_width", "Architrave Extra Width"),
+        ("frame_horizontal_thickness", "Frame Horizontal Thickness"),
+        ("frame_vertical_thickness", "Frame Vertical Thickness"),
+        ("shutter_thickness", "Shutter Thickness"),
     ]
 
-    if opening_keys:
-        st.markdown("#### Opening Size")
-        open_col1, open_col2 = st.columns(2)
+    input_cols = st.columns(4)
 
-        if "opening_length" in opening_keys:
-            with open_col1:
-                variables["opening_length"] = st.number_input(
-                    "Opening Length",
-                    value=float(DEFAULT_VALUES["opening_length"]),
-                    step=1.0,
-                    format="%.2f",
-                    key=f"input_{product_cat}_{product_code}_opening_length"
-                )
-
-        if "opening_width" in opening_keys:
-            with open_col2:
-                variables["opening_width"] = st.number_input(
-                    "Opening Width",
-                    value=float(DEFAULT_VALUES["opening_width"]),
-                    step=1.0,
-                    format="%.2f",
-                    key=f"input_{product_cat}_{product_code}_opening_width"
-                )
-
-    component_input_keys = [
-        key for key in required_input_keys_all
-        if key not in ["opening_length", "opening_width"]
-    ]
-
-    if component_input_keys:
-        st.markdown("#### Component Inputs")
-        input_cols = st.columns(4)
-
-        for idx, key in enumerate(component_input_keys):
-            with input_cols[idx % 4]:
-                variables[key] = st.number_input(
-                    labelize_key(key),
-                    value=float(DEFAULT_VALUES.get(key, 0.0)),
-                    step=1.0,
-                    format="%.2f",
-                    key=f"input_{product_cat}_{product_code}_{key}"
-                )
+    for idx, (key, label) in enumerate(input_fields):
+        with input_cols[idx % 4]:
+            variables[key] = st.number_input(
+                label,
+                value=float(DEFAULT_VALUES.get(key, 0.0)),
+                step=1.0,
+                format="%.2f",
+                key=f"input_{key}"
+            )
 
     manual_dimensions = selected_component_manual_dimensions(rules)
 
@@ -697,11 +639,8 @@ def show_component_calculator(conn, cur):
                     value=0.0,
                     step=1.0,
                     format="%.2f",
-                    key=f"manual_input_{product_cat}_{product_code}_{slug(component)}_{slug(attribute)}_{idx}"
+                    key=f"manual_input_{slug(component)}_{slug(attribute)}_{idx}"
                 )
-
-    if not required_input_keys_all and not manual_dimensions:
-        st.info("No user based inputs required for this product.")
 
     st.markdown("---")
 
@@ -945,10 +884,6 @@ def show_component_calculator(conn, cur):
         df_preview_raw = pd.DataFrame(
             st.session_state["generated_component_preview"]
         )
-
-        if df_preview_raw.empty:
-            st.warning("No components generated.")
-            return
 
         house_rows = []
 
