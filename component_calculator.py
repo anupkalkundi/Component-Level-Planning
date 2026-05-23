@@ -2,7 +2,10 @@ import streamlit as st
 import pandas as pd
 import re
 from decimal import Decimal
+from io import BytesIO
 from html import escape
+from openpyxl import Workbook
+from openpyxl.styles import Font, Border, Side, Alignment
 from psycopg2.extras import execute_values
 
 
@@ -796,9 +799,10 @@ def clean_display_number(value):
         return value
 
 
-def render_summary_header(project_name, product_code, generated_lh, generated_rh):
+def render_summary_header(project_name, unit_type, product_code, generated_lh, generated_rh):
     cells = [
         "Project", project_name,
+        "Unit Type", unit_type,
         "Product", product_code,
         "Total LH Quantity", generated_lh,
         "Total RH Quantity", generated_rh,
@@ -817,6 +821,67 @@ def render_summary_header(project_name, product_code, generated_lh, generated_rh
         """,
         unsafe_allow_html=True
     )
+
+
+def build_components_excel(project_name, unit_type, product_code, generated_lh, generated_rh, df_preview):
+    output = BytesIO()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Generated Components"
+
+    thin_border = Border(
+        left=Side(style="thin", color="D9D9D9"),
+        right=Side(style="thin", color="D9D9D9"),
+        top=Side(style="thin", color="D9D9D9"),
+        bottom=Side(style="thin", color="D9D9D9"),
+    )
+
+    header_row = [
+        "Project", project_name,
+        "Unit Type", unit_type,
+        "Product", product_code,
+        "Total LH Quantity", generated_lh,
+        "Total RH Quantity", generated_rh,
+    ]
+
+    ws.append(header_row)
+
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    ws.append([])
+    ws.append(list(df_preview.columns))
+
+    for cell in ws[3]:
+        cell.font = Font(bold=True)
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    for _, row in df_preview.iterrows():
+        ws.append(list(row.values))
+
+    for row in ws.iter_rows(min_row=4, max_row=ws.max_row):
+        for cell in row:
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical="center")
+
+    for column_cells in ws.columns:
+        max_length = 0
+        column_letter = column_cells[0].column_letter
+
+        for cell in column_cells:
+            value = "" if cell.value is None else str(cell.value)
+            max_length = max(max_length, len(value))
+
+        ws.column_dimensions[column_letter].width = min(max_length + 4, 45)
+
+    wb.save(output)
+    output.seek(0)
+
+    return output
 
 
 def ensure_generated_components_table(conn, cur):
@@ -1424,6 +1489,7 @@ def show_component_calculator(conn, cur):
 
             render_summary_header(
                 project_name,
+                unit_type,
                 product_code,
                 generated_lh,
                 generated_rh
@@ -1432,6 +1498,7 @@ def show_component_calculator(conn, cur):
         else:
             render_summary_header(
                 project_name,
+                unit_type,
                 product_code,
                 0,
                 0
@@ -1441,6 +1508,23 @@ def show_component_calculator(conn, cur):
             df_preview,
             hide_index=True,
             use_container_width=True
+        )
+
+        excel_file = build_components_excel(
+            project_name,
+            unit_type,
+            product_code,
+            generated_lh,
+            generated_rh,
+            df_preview
+        )
+
+        st.download_button(
+            label="Download Excel",
+            data=excel_file,
+            file_name=f"{project_name}_{unit_type}_{product_code}_components.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"download_components_excel_{state_key}"
         )
 
         errors_found = st.session_state.get("generated_component_errors", False)
