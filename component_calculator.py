@@ -1373,8 +1373,6 @@ def show_component_calculator(conn, cur):
             "Width": "",
             "Thickness": "",
         }
-        else:
-            total_row["Quantity"] = ""
 
         total_row["Total Quantity"] = ""
         total_row["CFT"] = Decimal(str(round(total_cft, 2)))
