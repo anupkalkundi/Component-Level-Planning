@@ -1317,6 +1317,27 @@ def show_component_calculator(conn, cur):
             width_value = values.get("width", "")
             thickness_value = values.get("thickness", values.get("height", ""))
 
+
+            def clean_display_number(value):
+
+                if value in [None, ""]:
+                    return ""
+
+                try:
+                    number = float(value)
+
+                    if number.is_integer():
+                        return int(number)
+
+                    return round(number, 2)
+
+               except:
+                   return value
+
+length_value = clean_display_number(length_value)
+width_value = clean_display_number(width_value)
+thickness_value = clean_display_number(thickness_value)
+
             component_name = str(first_row["Component"]).strip().lower()
 
             if component_name == "flush shutter":
@@ -1331,7 +1352,6 @@ def show_component_calculator(conn, cur):
                 )
 
             row_data = {
-                "House Number": first_row["House Number"],
                 "Product": first_row["Product"],
                 "Component": first_row["Component"],
                 "Length": length_value,
@@ -1341,24 +1361,26 @@ def show_component_calculator(conn, cur):
 
             if uses_orientation:
 
-                row_data["LH Quantity"] = (
-                    f'{first_row["House Number"]}: {int(first_row["LH Quantity"])}'
-                    if clean_int(first_row["LH Quantity"]) > 0
-                    else ""
+                lh_qty = clean_int(first_row["LH Quantity"])
+                rh_qty = clean_int(first_row["RH Quantity"])
+
+                quantity_text = []
+
+                if lh_qty > 0:
+                    quantity_text.append(f"{lh_qty}L")
+
+                if rh_qty > 0:
+                    quantity_text.append(f"{rh_qty}R")
+
+                row_data["LH & RH Quantity"] = (
+                    f'{first_row["House Number"]}: {", ".join(quantity_text)}'
                 )
 
-                row_data["RH Quantity"] = (
-                    f'{first_row["House Number"]}: {int(first_row["RH Quantity"])}'
-                    if clean_int(first_row["RH Quantity"]) > 0
-                    else ""
-                )
+            else:
 
-            else: 
-    
                 row_data["Quantity"] = (
                     f'{first_row["House Number"]}: {int(first_row["Quantity"])}'
                 )
-
             row_data["Total Quantity"] = first_row["Total Quantity"]
             row_data["CFT"] = cft_value
             house_rows.append(row_data)
