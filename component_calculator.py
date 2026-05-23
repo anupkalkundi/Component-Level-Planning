@@ -1317,26 +1317,25 @@ def show_component_calculator(conn, cur):
             width_value = values.get("width", "")
             thickness_value = values.get("thickness", values.get("height", ""))
 
-
             def clean_display_number(value):
-
+           
                 if value in [None, ""]:
                     return ""
-
+           
                 try:
                     number = float(value)
-
+            
                     if number.is_integer():
                         return int(number)
-
+            
                     return round(number, 2)
-
-               except:
-                   return value
-
-length_value = clean_display_number(length_value)
-width_value = clean_display_number(width_value)
-thickness_value = clean_display_number(thickness_value)
+        
+                except:
+                    return value
+        
+            length_value = clean_display_number(length_value)
+            width_value = clean_display_number(width_value)
+            thickness_value = clean_display_number(thickness_value)
 
             component_name = str(first_row["Component"]).strip().lower()
 
