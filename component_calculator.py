@@ -1341,23 +1341,23 @@ def show_component_calculator(conn, cur):
 
             if uses_orientation:
 
-    row_data["LH Quantity"] = (
-        f'{first_row["House Number"]}: {int(first_row["LH Quantity"])}'
-        if clean_int(first_row["LH Quantity"]) > 0
-        else ""
-    )
+                row_data["LH Quantity"] = (
+                    f'{first_row["House Number"]}: {int(first_row["LH Quantity"])}'
+                    if clean_int(first_row["LH Quantity"]) > 0
+                    else ""
+                )
 
-    row_data["RH Quantity"] = (
-        f'{first_row["House Number"]}: {int(first_row["RH Quantity"])}'
-        if clean_int(first_row["RH Quantity"]) > 0
-        else ""
-    )
+                row_data["RH Quantity"] = (
+                    f'{first_row["House Number"]}: {int(first_row["RH Quantity"])}'
+                    if clean_int(first_row["RH Quantity"]) > 0
+                    else ""
+                )
 
-else: 
+            else: 
     
-    row_data["Quantity"] = (
-        f'{first_row["House Number"]}: {int(first_row["Quantity"])}'
-    )
+                row_data["Quantity"] = (
+                    f'{first_row["House Number"]}: {int(first_row["Quantity"])}'
+                )
 
             row_data["Total Quantity"] = first_row["Total Quantity"]
             row_data["CFT"] = cft_value
