@@ -1341,7 +1341,7 @@ def show_component_calculator(conn, cur):
                     length_value,
                     width_value,
                     thickness_value,
-                    total quantity: first_row["Total Quantity"],
+                    first_row["Total Quantity"],
                     round_value=True
                 )
 
@@ -1350,7 +1350,7 @@ def show_component_calculator(conn, cur):
                 "Length": length_value,
                 "Width": width_value,
                 "Thickness": thickness_value,
-                "Total Quantity": "Total Quantity": first_row["Total Quantity"],
+                "Total Quantity": first_row["Total Quantity"],
                 "CFT": cft_value,
                 "LH & RH Details": "",
             }
