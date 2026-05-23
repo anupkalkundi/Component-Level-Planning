@@ -1341,7 +1341,7 @@ def show_component_calculator(conn, cur):
                     length_value,
                     width_value,
                     thickness_value,
-                    group_df["Total Quantity"].sum()
+                    group_df["Total Quantity"].sum(),
                     round_value=True
                 )
 
