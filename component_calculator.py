@@ -1297,13 +1297,8 @@ def show_component_calculator(conn, cur):
         house_rows = []
 
         group_cols = [
-            "House Number",
             "Product",
             "Component",
-            "Total Quantity",
-            "LH Quantity",
-            "RH Quantity",
-            "Quantity",
         ]
 
         for _, group_df in df_preview_raw.groupby(group_cols, dropna=False, sort=False):
@@ -1346,7 +1341,7 @@ def show_component_calculator(conn, cur):
                     length_value,
                     width_value,
                     thickness_value,
-                    first_row["Total Quantity"],
+                    group_df["Total Quantity"].sum()
                     round_value=True
                 )
 
@@ -1355,7 +1350,7 @@ def show_component_calculator(conn, cur):
                 "Length": length_value,
                 "Width": width_value,
                 "Thickness": thickness_value,
-                "Total Quantity": first_row["Total Quantity"],
+                "Total Quantity": group_df["Total Quantity"].sum(),
                 "CFT": cft_value,
             }
 
@@ -1405,17 +1400,20 @@ def show_component_calculator(conn, cur):
                     lh_rh_summary.append(
                         f"{house_no}: {', '.join(summary_parts)}"
                     )
-
-             lh_rh_text = "  ".join(lh_rh_summary)
+         
+            lh_rh_text = "  ".join(lh_rh_summary)
     
         df_preview = pd.DataFrame(house_rows)
 
-        st.markdown(f"### Project : {project_name}")
-        st.markdown(f"### Product : {product_code}")
+        header_text = f"""
+        **Project:** {project_name} &nbsp;&nbsp;&nbsp;&nbsp;
+        **Product:** {product_code}
+        """
 
         if uses_orientation:
-            st.markdown(f"### LH & RH : {lh_rh_text}")
+            header_text += f"&nbsp;&nbsp;&nbsp;&nbsp; **LH & RH:** {lh_rh_text}"
 
+        st.markdown(header_text, unsafe_allow_html=True)
         st.dataframe(df_preview, use_container_width=True, hide_index=True)
 
         errors_found = st.session_state.get("generated_component_errors", False)
