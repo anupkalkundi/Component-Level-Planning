@@ -1351,37 +1351,14 @@ def show_component_calculator(conn, cur):
                 )
 
             row_data = {
-                "Product": first_row["Product"],
                 "Component": first_row["Component"],
                 "Length": length_value,
                 "Width": width_value,
                 "Thickness": thickness_value,
+                "Total Quantity": first_row["Total Quantity"],
+                "CFT": cft_value,
             }
 
-            if uses_orientation:
-
-                lh_qty = clean_int(first_row["LH Quantity"])
-                rh_qty = clean_int(first_row["RH Quantity"])
-
-                quantity_text = []
-
-                if lh_qty > 0:
-                    quantity_text.append(f"{lh_qty}L")
-
-                if rh_qty > 0:
-                    quantity_text.append(f"{rh_qty}R")
-
-                row_data["LH & RH Quantity"] = (
-                    f'{first_row["House Number"]}: {", ".join(quantity_text)}'
-                )
-
-            else:
-
-                row_data["Quantity"] = (
-                    f'{first_row["House Number"]}: {int(first_row["Quantity"])}'
-                )
-            row_data["Total Quantity"] = first_row["Total Quantity"]
-            row_data["CFT"] = cft_value
             house_rows.append(row_data)
 
         total_cft = sum(
@@ -1391,17 +1368,11 @@ def show_component_calculator(conn, cur):
         )
 
         total_row = {
-            "House Number": "",
-            "Product": "",
             "Component": "CFT Total",
             "Length": "",
             "Width": "",
             "Thickness": "",
         }
-
-        if uses_orientation:
-            total_row["LH Quantity"] = ""
-            total_row["RH Quantity"] = ""
         else:
             total_row["Quantity"] = ""
 
@@ -1409,7 +1380,44 @@ def show_component_calculator(conn, cur):
         total_row["CFT"] = Decimal(str(round(total_cft, 2)))
         house_rows.append(total_row)
 
+        lh_rh_summary = []
+
+        if uses_orientation:
+
+            unique_houses = df_preview_raw[
+                ["House Number", "LH Quantity", "RH Quantity"]
+            ].drop_duplicates()
+
+            for _, row in unique_houses.iterrows():
+
+                house_no = row["House Number"]
+
+                lh_qty = clean_int(row["LH Quantity"])
+                rh_qty = clean_int(row["RH Quantity"])
+
+                summary_parts = []
+
+                if lh_qty > 0:
+                    summary_parts.append(f"{lh_qty}L")
+
+                if rh_qty > 0:
+                    summary_parts.append(f"{rh_qty}R")
+
+                if summary_parts:
+                    lh_rh_summary.append(
+                        f"{house_no}: {', '.join(summary_parts)}"
+                    )
+
+             lh_rh_text = "  ".join(lh_rh_summary)
+    
         df_preview = pd.DataFrame(house_rows)
+
+        st.markdown(f"### Project : {project_name}")
+        st.markdown(f"### Product : {product_code}")
+
+        if uses_orientation:
+            st.markdown(f"### LH & RH : {lh_rh_text}")
+
         st.dataframe(df_preview, use_container_width=True, hide_index=True)
 
         errors_found = st.session_state.get("generated_component_errors", False)
