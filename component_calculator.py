@@ -1341,7 +1341,7 @@ def show_component_calculator(conn, cur):
                     length_value,
                     width_value,
                     thickness_value,
-                    group_df["Total Quantity"].sum(),
+                    "Total Quantity": first_row["Total Quantity"],
                     round_value=True
                 )
 
@@ -1350,7 +1350,7 @@ def show_component_calculator(conn, cur):
                 "Length": length_value,
                 "Width": width_value,
                 "Thickness": thickness_value,
-                "Total Quantity": group_df["Total Quantity"].sum(),
+                "Total Quantity": "Total Quantity": first_row["Total Quantity"],
                 "CFT": cft_value,
                 "LH & RH Details": "",
             }
@@ -1377,8 +1377,6 @@ def show_component_calculator(conn, cur):
         lh_rh_summary = []
 
         if uses_orientation:
-            df_preview["LH & RH Details"] = ""
-            df_preview.loc[0, "LH & RH Details"] = lh_rh_text
 
             unique_houses = df_preview_raw[
                 ["House Number", "LH Quantity", "RH Quantity"]
@@ -1406,10 +1404,14 @@ def show_component_calculator(conn, cur):
            
             lh_rh_text = "\n".join(lh_rh_summary)
             
-        df_preview = pd.DataFrame(house_rows)
+            df_preview = pd.DataFrame(house_rows)
 
-        st.markdown(f"### Project : {project_name}")
-        st.markdown(f"### Product : {product_code}")
+            if uses_orientation:
+                df_preview["LH & RH Details"] = ""
+                df_preview.loc[0, "LH & RH Details"] = lh_rh_text
+
+            st.markdown(f"### Project : {project_name}")
+            st.markdown(f"### Product : {product_code}")
 
         if uses_orientation:
             st.markdown(f"### Total LH Quantity : {generated_lh}")
