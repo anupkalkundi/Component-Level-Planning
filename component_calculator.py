@@ -5,7 +5,7 @@ from decimal import Decimal
 from io import BytesIO
 from html import escape
 from openpyxl import Workbook
-from openpyxl.styles import Font, Border, Side, Alignment
+from openpyxl.styles import Font, Border, Side, Alignment, PatternFill
 from psycopg2.extras import execute_values
 
 
@@ -830,53 +830,83 @@ def build_components_excel(project_name, unit_type, product_code, generated_lh, 
     ws = wb.active
     ws.title = "Generated Components"
 
-    thin_border = Border(
-        left=Side(style="thin", color="D9D9D9"),
-        right=Side(style="thin", color="D9D9D9"),
-        top=Side(style="thin", color="D9D9D9"),
-        bottom=Side(style="thin", color="D9D9D9"),
+    orange_fill = PatternFill("solid", fgColor="E97100")
+    white_fill = PatternFill("solid", fgColor="FFFFFF")
+
+    black_border = Border(
+        left=Side(style="thin", color="000000"),
+        right=Side(style="thin", color="000000"),
+        top=Side(style="thin", color="000000"),
+        bottom=Side(style="thin", color="000000"),
     )
 
-    header_row = [
-        "Project", project_name,
-        "Unit Type", unit_type,
-        "Product", product_code,
-        "Total LH Quantity", generated_lh,
-        "Total RH Quantity", generated_rh,
+    bold_font = Font(bold=True, color="000000", size=14)
+    table_header_font = Font(bold=True, color="000000", size=11)
+    normal_font = Font(color="000000", size=11)
+
+    center_align = Alignment(horizontal="center", vertical="center")
+    wrap_center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    ws.merge_cells("A1:A2")
+    ws.merge_cells("B1:B2")
+    ws.merge_cells("C1:C2")
+    ws.merge_cells("D1:D2")
+    ws.merge_cells("E1:E2")
+    ws.merge_cells("F1:F2")
+    ws.merge_cells("G1:G2")
+
+    ws["A1"] = "Project"
+    ws["B1"] = project_name
+    ws["C1"] = "Unit Type"
+    ws["D1"] = unit_type
+    ws["E1"] = "Product"
+    ws["F1"] = product_code
+    ws["G1"] = f"Total LH Quantity : {generated_lh}\nTotal RH Quantity : {generated_rh}"
+
+    for row in ws.iter_rows(min_row=1, max_row=2, min_col=1, max_col=7):
+        for cell in row:
+            cell.fill = orange_fill
+            cell.border = black_border
+            cell.font = bold_font
+            cell.alignment = wrap_center_align
+
+    table_columns = [
+        "Component",
+        "Length",
+        "Width",
+        "Thickness",
+        "Total Quantity",
+        "CFT",
+        "LH & RH Details",
     ]
 
-    ws.append(header_row)
+    for col_idx, column_name in enumerate(table_columns, start=1):
+        cell = ws.cell(row=3, column=col_idx, value=column_name)
+        cell.fill = white_fill
+        cell.border = black_border
+        cell.font = table_header_font
+        cell.alignment = center_align
 
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-        cell.border = thin_border
-        cell.alignment = Alignment(horizontal="center", vertical="center")
+    for row_idx, (_, row) in enumerate(df_preview.iterrows(), start=4):
+        for col_idx, column_name in enumerate(table_columns, start=1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=row.get(column_name, ""))
+            cell.border = black_border
+            cell.font = normal_font
+            cell.alignment = center_align
 
-    ws.append([])
-    ws.append(list(df_preview.columns))
+    ws.column_dimensions["A"].width = 22
+    ws.column_dimensions["B"].width = 12
+    ws.column_dimensions["C"].width = 14
+    ws.column_dimensions["D"].width = 14
+    ws.column_dimensions["E"].width = 20
+    ws.column_dimensions["F"].width = 12
+    ws.column_dimensions["G"].width = 34
 
-    for cell in ws[3]:
-        cell.font = Font(bold=True)
-        cell.border = thin_border
-        cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 42
+    ws.row_dimensions[2].height = 42
+    ws.row_dimensions[3].height = 22
 
-    for _, row in df_preview.iterrows():
-        ws.append(list(row.values))
-
-    for row in ws.iter_rows(min_row=4, max_row=ws.max_row):
-        for cell in row:
-            cell.border = thin_border
-            cell.alignment = Alignment(vertical="center")
-
-    for column_cells in ws.columns:
-        max_length = 0
-        column_letter = column_cells[0].column_letter
-
-        for cell in column_cells:
-            value = "" if cell.value is None else str(cell.value)
-            max_length = max(max_length, len(value))
-
-        ws.column_dimensions[column_letter].width = min(max_length + 4, 45)
+    ws.freeze_panes = "A3"
 
     wb.save(output)
     output.seek(0)
