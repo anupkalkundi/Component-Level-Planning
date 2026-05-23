@@ -42,7 +42,7 @@ VARIABLE_ALIASES = {
 
 
 DEFAULT_VALUES = {
-    "opening_length": 0.0,
+    "opening_length": 0,
     "opening_width": 0.0,
     "opening_height_1": 0.0,
     "opening_height_2": 0.0,
