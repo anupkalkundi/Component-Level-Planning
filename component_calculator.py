@@ -1352,6 +1352,7 @@ def show_component_calculator(conn, cur):
                 "Thickness": thickness_value,
                 "Total Quantity": group_df["Total Quantity"].sum(),
                 "CFT": cft_value,
+                "LH & RH Details": "",
             }
 
             house_rows.append(row_data)
@@ -1376,6 +1377,8 @@ def show_component_calculator(conn, cur):
         lh_rh_summary = []
 
         if uses_orientation:
+            df_preview["LH & RH Details"] = ""
+            df_preview.loc[0, "LH & RH Details"] = lh_rh_text
 
             unique_houses = df_preview_raw[
                 ["House Number", "LH Quantity", "RH Quantity"]
@@ -1400,21 +1403,23 @@ def show_component_calculator(conn, cur):
                     lh_rh_summary.append(
                         f"{house_no}: {', '.join(summary_parts)}"
                     )
-         
-            lh_rh_text = "  ".join(lh_rh_summary)
-    
+           
+            lh_rh_text = "\n".join(lh_rh_summary)
+            
         df_preview = pd.DataFrame(house_rows)
 
-        header_text = f"""
-        **Project:** {project_name} &nbsp;&nbsp;&nbsp;&nbsp;
-        **Product:** {product_code}
-        """
+        st.markdown(f"### Project : {project_name}")
+        st.markdown(f"### Product : {product_code}")
 
         if uses_orientation:
-            header_text += f"&nbsp;&nbsp;&nbsp;&nbsp; **LH & RH:** {lh_rh_text}"
+            st.markdown(f"### Total LH Quantity : {generated_lh}")
+            st.markdown(f"### Total RH Quantity : {generated_rh}")
 
-        st.markdown(header_text, unsafe_allow_html=True)
-        st.dataframe(df_preview, use_container_width=True, hide_index=True)
+        st.dataframe(
+            df_preview,
+            use_container_width=True,
+            hide_index=True
+        )
 
         errors_found = st.session_state.get("generated_component_errors", False)
 
