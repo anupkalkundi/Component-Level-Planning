@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 from decimal import Decimal
+from html import escape
 from psycopg2.extras import execute_values
 
 
@@ -295,9 +296,6 @@ def formula_known_keys(rules, variables=None):
         keys.add(component_key)
         keys.add(f"{component_key}_{attribute_key}")
 
-        # FIX 2: also register the normalised/aliased form of the component key
-        # so that _f1/_f2 variants (e.g. glass_shutter_width_top_f1) are always
-        # recognised as a single token and never split by repair_joined_formula_tokens
         normalized_component_key = normalize_variable(component_key)
         if normalized_component_key != component_key:
             keys.add(normalized_component_key)
@@ -508,16 +506,12 @@ def conditional_quantity(quantity, variables):
     if number is not None:
         return int(number)
 
-    # FIX 3: correctly parse "If Mesh Yes: 2, If Mesh No: 0" pattern.
-    # Original used `and` so both substrings had to be present; also the
-    # regex was too strict. Now triggers on either keyword and accepts
-    # optional "if" prefix and colon-or-dash separators.
     if "mesh yes" in text or "mesh no" in text:
         yes_match = re.search(r"mesh\s*yes\s*[:\-]?\s*([0-9.]+)", text)
-        no_match  = re.search(r"mesh\s*no\s*[:\-]?\s*([0-9.]+)", text)
+        no_match = re.search(r"mesh\s*no\s*[:\-]?\s*([0-9.]+)", text)
 
         yes_qty = int(float(yes_match.group(1))) if yes_match else 0
-        no_qty  = int(float(no_match.group(1)))  if no_match  else 0
+        no_qty = int(float(no_match.group(1))) if no_match else 0
 
         return yes_qty if int(variables.get("mesh_yes", 0)) == 1 else no_qty
 
@@ -757,17 +751,9 @@ def store_calculated_value(variables, component, attribute, value):
     attribute_key = normalize_variable(slug(attribute))
     numeric_value = float(value)
 
-    # Always store the fully-qualified key e.g. glass_shutter_width_top_1_width
     full_key = f"{component_key}_{attribute_key}"
     variables[full_key] = numeric_value
 
-    # FIX 1: only write the bare component key (e.g. glass_shutter_width_top_1)
-    # when the attribute is 'length'.  Previously every attribute overwrote it,
-    # so a later width/thickness rule silently clobbered the length value that
-    # downstream formulas depend on.  Now:
-    #   - length   → always writes the bare key (primary dimension)
-    #   - anything else → writes the bare key only if it has not been set yet
-    #     (safe first-seen fallback, preserves door product behaviour)
     if attribute_key == "length":
         variables[component_key] = numeric_value
     elif component_key not in variables:
@@ -792,6 +778,45 @@ def calculate_cft(length, width, thickness, quantity, round_value=True):
         return Decimal(str(round(cft, 2)))
 
     return Decimal(str(cft))
+
+
+def clean_display_number(value):
+    if value in [None, ""]:
+        return ""
+
+    try:
+        number = float(value)
+
+        if number.is_integer():
+            return int(number)
+
+        return round(number, 2)
+
+    except Exception:
+        return value
+
+
+def render_summary_header(project_name, product_code, generated_lh, generated_rh):
+    cells = [
+        "Project", project_name,
+        "Product", product_code,
+        "Total LH Quantity", generated_lh,
+        "Total RH Quantity", generated_rh,
+    ]
+
+    html_cells = "".join(
+        f"<td style='border:1px solid #d9d9d9;padding:8px 12px;font-weight:600;'>{escape(str(cell))}</td>"
+        for cell in cells
+    )
+
+    st.markdown(
+        f"""
+        <table style="border-collapse:collapse;width:100%;margin-bottom:16px;">
+            <tr>{html_cells}</tr>
+        </table>
+        """,
+        unsafe_allow_html=True
+    )
 
 
 def ensure_generated_components_table(conn, cur):
@@ -1308,29 +1333,9 @@ def show_component_calculator(conn, cur):
             for _, row in group_df.iterrows():
                 values[str(row["Attribute"]).strip().lower()] = row["Value"]
 
-            length_value = values.get("length", "")
-            width_value = values.get("width", "")
-            thickness_value = values.get("thickness", values.get("height", ""))
-
-            def clean_display_number(value):
-           
-                if value in [None, ""]:
-                    return ""
-           
-                try:
-                    number = float(value)
-            
-                    if number.is_integer():
-                        return int(number)
-            
-                    return round(number, 2)
-        
-                except:
-                    return value
-        
-            length_value = clean_display_number(length_value)
-            width_value = clean_display_number(width_value)
-            thickness_value = clean_display_number(thickness_value)
+            length_value = clean_display_number(values.get("length", ""))
+            width_value = clean_display_number(values.get("width", ""))
+            thickness_value = clean_display_number(values.get("thickness", values.get("height", "")))
 
             component_name = str(first_row["Component"]).strip().lower()
 
@@ -1368,24 +1373,22 @@ def show_component_calculator(conn, cur):
             "Length": "",
             "Width": "",
             "Thickness": "",
+            "Total Quantity": "",
+            "CFT": Decimal(str(round(total_cft, 2))),
+            "LH & RH Details": "",
         }
 
-        total_row["Total Quantity"] = ""
-        total_row["CFT"] = Decimal(str(round(total_cft, 2)))
         house_rows.append(total_row)
 
         lh_rh_summary = []
 
         if uses_orientation:
-
             unique_houses = df_preview_raw[
                 ["House Number", "LH Quantity", "RH Quantity"]
             ].drop_duplicates()
 
             for _, row in unique_houses.iterrows():
-
                 house_no = row["House Number"]
-
                 lh_qty = clean_int(row["LH Quantity"])
                 rh_qty = clean_int(row["RH Quantity"])
 
@@ -1401,26 +1404,43 @@ def show_component_calculator(conn, cur):
                     lh_rh_summary.append(
                         f"{house_no}: {', '.join(summary_parts)}"
                     )
-           
-            lh_rh_text = "\n".join(lh_rh_summary)
-            
-            df_preview = pd.DataFrame(house_rows)
 
-            if uses_orientation:
-                df_preview["LH & RH Details"] = ""
-                df_preview.loc[0, "LH & RH Details"] = lh_rh_text
-
-            st.markdown(f"### Project : {project_name}")
-            st.markdown(f"### Product : {product_code}")
+        df_preview = pd.DataFrame(house_rows)
 
         if uses_orientation:
-            st.markdown(f"### Total LH Quantity : {generated_lh}")
-            st.markdown(f"### Total RH Quantity : {generated_rh}")
+            lh_rh_chunks = []
+            chunk_size = 2
+
+            for i in range(0, len(lh_rh_summary), chunk_size):
+                lh_rh_chunks.append(
+                    " | ".join(lh_rh_summary[i:i + chunk_size])
+                )
+
+            df_preview["LH & RH Details"] = ""
+
+            for idx, chunk in enumerate(lh_rh_chunks):
+                if idx < len(df_preview):
+                    df_preview.loc[idx, "LH & RH Details"] = chunk
+
+            render_summary_header(
+                project_name,
+                product_code,
+                generated_lh,
+                generated_rh
+            )
+
+        else:
+            render_summary_header(
+                project_name,
+                product_code,
+                0,
+                0
+            )
 
         st.dataframe(
             df_preview,
-            use_container_width=True,
-            hide_index=True
+            hide_index=True,
+            use_container_width=True
         )
 
         errors_found = st.session_state.get("generated_component_errors", False)
