@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 from decimal import Decimal
-from psycopg2.extras import execute_values
+from psycopg2.extras import execute_values, Json
 
 
 class FormulaError(Exception):
@@ -25,136 +25,45 @@ VARIABLE_ALIASES = {
     "extra_width": "architrave_extra_width",
     "frame_h_thk": "frame_horizontal_thickness",
     "frame_v_thk": "frame_vertical_thickness",
-    "frame_horizontal_thicknes": "frame_horizontal_thickness",
-    "glass_shutter_width_top1": "glass_shutter_width_top_1",
-    "glass_shutter_width_top2": "glass_shutter_width_top_2",
-    "glass_shutter_width_bottom1": "glass_shutter_width_bottom_1",
-    "glass_shutter_width_bottom2": "glass_shutter_width_bottom_2",
-    "mesh_shutter_width_top1": "mesh_shutter_width_top_1",
-    "mesh_shutter_width_top2": "mesh_shutter_width_top_2",
-    "mesh_shutter_width_bottom1": "mesh_shutter_width_bottom_1",
-    "mesh_shutter_width_bottom2": "mesh_shutter_width_bottom_2",
-    "glass_shutter_width_topf1": "glass_shutter_width_top_f1",
-    "glass_shutter_width_topf2": "glass_shutter_width_top_f2",
-    "glass_shutter_width_bottomf1": "glass_shutter_width_bottom_f1",
-    "glass_shutter_width_bottomf2": "glass_shutter_width_bottom_f2",
 }
 
 
 DEFAULT_VALUES = {
     "opening_length": 0.0,
     "opening_width": 0.0,
-    "opening_height_1": 0.0,
-    "opening_height_2": 0.0,
-    "opening_length_1": 0.0,
-    "opening_length_2": 0.0,
     "vertical_clearance": 0.0,
     "horizontal_clearance": 0.0,
     "architrave_extra_length": 0.0,
     "architrave_extra_width": 0.0,
     "frame_horizontal_thickness": 0.0,
     "frame_vertical_thickness": 0.0,
-    "shutter_thickness": 0.0,
     "lh_quantity": 0.0,
     "rh_quantity": 0.0,
-    "quantity": 0.0,
-    "mesh_yes": 0.0,
+    "shutter_thickness": 0.0,
+    "allowance": 0.0,
+    "groove": 0.0,
+    "cut": 0.0,
+    "offset": 0.0,
 }
-
-
-COMPONENT_INPUT_KEYS = {
-    "vertical_clearance",
-    "horizontal_clearance",
-    "architrave_extra_length",
-    "architrave_extra_width",
-    "frame_horizontal_thickness",
-    "frame_vertical_thickness",
-    "shutter_thickness",
-    "lh_quantity",
-    "rh_quantity",
-    "quantity",
-}
-
-
-FIXED_COMPONENT_DIMENSIONS = {
-    "architrave_vertical": {"width": Decimal("40"), "thickness": Decimal("12")},
-    "architrave_horizontal": {"width": Decimal("40"), "thickness": Decimal("12")},
-    "architrave_vertical_front": {"width": Decimal("40"), "thickness": Decimal("12")},
-    "architrave_horizontal_front": {"width": Decimal("40"), "thickness": Decimal("12")},
-    "door_frame_vertical_beading": {"width": Decimal("27"), "thickness": Decimal("11")},
-    "door_frame_horizontal_beading": {"width": Decimal("27"), "thickness": Decimal("11")},
-    "door_frame_vertical_beading_1": {"width": Decimal("15"), "thickness": Decimal("7")},
-    "door_frame_horizontal_beading_1": {"width": Decimal("15"), "thickness": Decimal("7")},
-    "door_frame_horizontal_beading_2": {"width": Decimal("20"), "thickness": Decimal("8")},
-    "louver": {"width": Decimal("41.5"), "thickness": Decimal("7.5")},
-}
-
-
-def slug(value):
-    return str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
-
-
-def label_from_key(key):
-    if key == "mesh_yes":
-        return "Mesh"
-    return str(key).replace("_", " ").title()
-
-
-def split_product_codes(product_code):
-    return [code.strip() for code in str(product_code or "").split(",") if code.strip()]
-
-
-def is_door_product(product_cat, product_code):
-    text = slug(f"{product_cat} {product_code}")
-    return "door" in text or "doowindow" in text or "door_window" in text
-
-
-def is_fw_product(product_cat, product_code):
-    text = slug(f"{product_cat} {product_code}")
-    return "fw" in text or "french_window" in text
-
-
-def is_fw3_product(product_cat, product_code):
-    return "fw3" in slug(f"{product_cat} {product_code}")
 
 
 def normalize_variable(var_name):
-    var_name = slug(var_name)
+    var_name = str(var_name).strip()
     return VARIABLE_ALIASES.get(var_name, var_name)
 
 
-def clean_number(value):
-    if value in [None, ""]:
-        return None
+def normalize_formula(formula):
+    formula = str(formula or "").strip()
 
-    try:
-        if pd.isna(value):
-            return None
-    except Exception:
-        pass
+    if "=" in formula:
+        left, right = formula.split("=", 1)
+        if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_]*\s*", left):
+            formula = right.strip()
 
-    try:
-        return float(value)
-    except Exception:
-        return None
+    for old_var, new_var in VARIABLE_ALIASES.items():
+        formula = re.sub(rf"\b{old_var}\b", new_var, formula)
 
-
-def clean_int(value):
-    number = clean_number(value)
-
-    if number is None:
-        return 0
-
-    return int(float(number))
-
-
-def decimal_or_none(value):
-    number = clean_number(value)
-
-    if number is None:
-        return None
-
-    return Decimal(str(round(number, 2)))
+    return formula
 
 
 def safe_execute(conn, cur, query, params=None):
@@ -176,284 +85,39 @@ def get_distinct_values(conn, cur, table, column, where_sql="", params=None):
     return [r[0] for r in cur.fetchall() if r[0] is not None]
 
 
-def get_table_columns(conn, cur, table):
-    safe_execute(conn, cur, """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_name = %s
-    """, (table,))
-    return {row[0] for row in cur.fetchall()}
-
-
-def first_existing_column(columns, candidates):
-    for candidate in candidates:
-        if candidate in columns:
-            return candidate
-    return None
-
-
-def rule_value(rule, key, default=None):
-    return rule.get(key, default)
-
-
-def load_product_rules(conn, cur, product_cat, selected_product_code):
-    columns = get_table_columns(conn, cur, "product_component_rules")
-
-    product_code_col = first_existing_column(columns, ["product_code", "productcode"])
-    product_cat_col = first_existing_column(columns, ["product_cat", "productcat"])
-    component_col = first_existing_column(columns, ["component", "components"])
-    attribute_col = first_existing_column(columns, ["attribute"])
-    type_col = first_existing_column(columns, ["type"])
-    formula_col = first_existing_column(columns, ["formula_used", "formula"])
-    quantity_col = first_existing_column(columns, ["quantity", "quanity"])
-    width_col = first_existing_column(columns, ["width", "fixed_width", "component_width"])
-    thickness_col = first_existing_column(columns, ["thickness", "fixed_thickness", "component_thickness"])
-
-    if not all([product_code_col, product_cat_col, component_col, attribute_col, type_col, formula_col, quantity_col]):
-        raise Exception("Missing required columns in product_component_rules table.")
-
-    select_cols = [
-        f"{product_code_col} AS product_code",
-        f"{component_col} AS component",
-        f"{attribute_col} AS attribute",
-        f"{type_col} AS type",
-        f"{formula_col} AS formula_used",
-        f"{quantity_col} AS quantity",
-    ]
-
-    if width_col:
-        select_cols.append(f"{width_col} AS fixed_width")
-    else:
-        select_cols.append("NULL AS fixed_width")
-
-    if thickness_col:
-        select_cols.append(f"{thickness_col} AS fixed_thickness")
-    else:
-        select_cols.append("NULL AS fixed_thickness")
-
-    query = f"""
-        SELECT {", ".join(select_cols)}
-        FROM product_component_rules
-        WHERE {product_cat_col} = %s
-    """
-
-    safe_execute(conn, cur, query, (product_cat,))
-
-    col_names = [desc[0] for desc in cur.description]
-    rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
-
-    rules = []
-    last_product_code = None
-
-    for row in rows:
-        db_product_code = row.get("product_code")
-
-        if db_product_code not in [None, ""]:
-            last_product_code = db_product_code
-        else:
-            db_product_code = last_product_code
-
-        row["product_code"] = db_product_code
-
-        if selected_product_code in split_product_codes(db_product_code):
-            rules.append({
-                "product_code": row.get("product_code"),
-                "component": row.get("component"),
-                "attribute": row.get("attribute"),
-                "rule_type": row.get("type"),
-                "formula": row.get("formula_used"),
-                "quantity": row.get("quantity"),
-                "fixed_width": row.get("fixed_width"),
-                "fixed_thickness": row.get("fixed_thickness"),
-            })
-
-    return rules
-
-
-def build_product_options(products):
-    options = []
-
-    for product_cat, product_code in products:
-        for single_code in split_product_codes(product_code):
-            options.append(f"{product_cat} | {single_code}")
-
-    return sorted(set(options))
-
-
-def formula_known_keys(rules, variables=None):
-    variables = variables or {}
-    keys = set(DEFAULT_VALUES.keys())
-    keys.update(variables.keys())
-
-    for rule in rules:
-        component = rule_value(rule, "component")
-        attribute = rule_value(rule, "attribute")
-
-        component_key = slug(component)
-        attribute_key = slug(attribute)
-
-        keys.add(component_key)
-        keys.add(f"{component_key}_{attribute_key}")
-
-        # FIX 2: also register the normalised/aliased form of the component key
-        # so that _f1/_f2 variants (e.g. glass_shutter_width_top_f1) are always
-        # recognised as a single token and never split by repair_joined_formula_tokens
-        normalized_component_key = normalize_variable(component_key)
-        if normalized_component_key != component_key:
-            keys.add(normalized_component_key)
-            keys.add(f"{normalized_component_key}_{attribute_key}")
-
-    return sorted(keys, key=len, reverse=True)
-
-
-def split_joined_formula_token(token, known_keys):
-    token = normalize_variable(token)
-
-    if token in known_keys:
-        return None
-
-    parts = []
-    remaining = token
-
-    while remaining:
-        match = None
-
-        for key in known_keys:
-            if remaining == key:
-                match = key
-                break
-
-            if remaining.startswith(key + "_"):
-                match = key
-                break
-
-        if not match:
-            return None
-
-        parts.append(match)
-
-        if remaining == match:
-            remaining = ""
-        else:
-            remaining = remaining[len(match) + 1:]
-
-    if len(parts) <= 1:
-        return None
-
-    return parts
-
-
-def operator_between(left, right):
-    right_key = str(right).lower()
-
-    if "extra" in right_key:
-        return "+"
-
-    return "-"
-
-
-def joined_parts_to_formula(parts):
-    expression = parts[0]
-
-    for part in parts[1:]:
-        expression += f" {operator_between(expression, part)} {part}"
-
-    return expression
-
-
-def repair_joined_formula_tokens(formula, rules, variables=None):
-    variables = variables or {}
-    known_keys = formula_known_keys(rules, variables)
-
-    def replace_token(match):
-        token = match.group(0)
-        normalized_token = normalize_variable(token)
-
-        if normalized_token in known_keys:
-            return normalized_token
-
-        parts = split_joined_formula_token(normalized_token, known_keys)
-
-        if not parts:
-            return token
-
-        return "(" + joined_parts_to_formula(parts) + ")"
-
-    return re.sub(
-        r"\b[A-Za-z_][A-Za-z0-9_]*\b",
-        replace_token,
-        formula
-    )
-
-
-def normalize_formula_for_eval(formula, rules, variables=None):
-    formula = str(formula or "").strip()
-
-    if not formula:
-        return ""
-
-    if "=" in formula:
-        left, right = formula.split("=", 1)
-        if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_ ]*\s*", left):
-            formula = right.strip()
-
-    for old_var, new_var in VARIABLE_ALIASES.items():
-        formula = re.sub(
-            rf"\b{old_var}\b",
-            new_var,
-            formula,
-            flags=re.IGNORECASE
-        )
-
-    known_keys = formula_known_keys(rules, variables)
-
-    for key in known_keys:
-        if "_width_" in key:
-            formula = re.sub(
-                rf"\b{re.escape(key.replace('_width_', '-width_'))}\b",
-                key,
-                formula,
-                flags=re.IGNORECASE
-            )
-
-        if "_length_" in key:
-            formula = re.sub(
-                rf"\b{re.escape(key.replace('_length_', '-length_'))}\b",
-                key,
-                formula,
-                flags=re.IGNORECASE
-            )
-
-    formula = repair_joined_formula_tokens(formula, rules, variables)
-
-    return formula
-
-
-def extract_formula_variables(formula, rules=None, variables=None):
-    formula = normalize_formula_for_eval(formula, rules or [], variables or {})
+def extract_formula_variables(formula):
+    formula = normalize_formula(formula)
 
     if not formula:
         return []
 
-    ignore_words = {"abs", "min", "max", "round", "float", "int", "Decimal"}
+    ignore_words = {
+        "abs",
+        "min",
+        "max",
+        "round",
+        "float",
+        "int",
+        "Decimal"
+    }
 
-    found = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", formula)
+    variables = re.findall(
+        r"\b[A-Za-z_][A-Za-z0-9_]*\b",
+        formula
+    )
 
     return sorted({
         normalize_variable(v)
-        for v in found
+        for v in variables
         if v not in ignore_words
     })
 
 
-def evaluate_formula(formula, variables, rules):
-    formula = normalize_formula_for_eval(formula, rules, variables)
+def evaluate_formula(formula, variables):
+    formula = normalize_formula(formula)
 
     if not formula:
         raise FormulaError("Formula empty")
-
-    if re.search(r"[A-Za-z_][A-Za-z0-9_]*\s+[A-Za-z_][A-Za-z0-9_]*", formula):
-        raise FormulaError(f"Invalid formula syntax: {formula}")
 
     clean_vars = {}
 
@@ -469,18 +133,38 @@ def evaluate_formula(formula, variables, rules):
     })
 
     try:
-        result = eval(formula, {"__builtins__": {}}, clean_vars)
+        result = eval(
+            formula,
+            {"__builtins__": {}},
+            clean_vars
+        )
         return Decimal(str(round(result, 2)))
 
     except NameError as e:
-        try:
-            missing_var = str(e).split("'")[1]
-        except Exception:
-            missing_var = str(e)
-        raise FormulaError(f"Missing dependency variable: {missing_var}")
+        raise FormulaError(f"Missing variable: {e}")
 
     except Exception as e:
         raise FormulaError(str(e))
+
+
+def slug(value):
+    return (
+        str(value or "")
+        .strip()
+        .lower()
+        .replace(" ", "_")
+        .replace("-", "_")
+    )
+
+
+def clean_number(value):
+    if value in [None, ""]:
+        return None
+
+    try:
+        return float(value)
+    except Exception:
+        return None
 
 
 def fixed_value(formula, quantity):
@@ -497,52 +181,14 @@ def fixed_value(formula, quantity):
     return None
 
 
-def conditional_quantity(quantity, variables):
-    text = str(quantity or "").strip().lower()
-
-    if not text:
-        return None
-
-    number = clean_number(quantity)
-
-    if number is not None:
-        return int(number)
-
-    # FIX 3: correctly parse "If Mesh Yes: 2, If Mesh No: 0" pattern.
-    # Original used `and` so both substrings had to be present; also the
-    # regex was too strict. Now triggers on either keyword and accepts
-    # optional "if" prefix and colon-or-dash separators.
-    if "mesh yes" in text or "mesh no" in text:
-        yes_match = re.search(r"mesh\s*yes\s*[:\-]?\s*([0-9.]+)", text)
-        no_match  = re.search(r"mesh\s*no\s*[:\-]?\s*([0-9.]+)", text)
-
-        yes_qty = int(float(yes_match.group(1))) if yes_match else 0
-        no_qty  = int(float(no_match.group(1)))  if no_match  else 0
-
-        return yes_qty if int(variables.get("mesh_yes", 0)) == 1 else no_qty
-
-    first_number = re.search(r"([0-9.]+)", text)
-
-    if first_number:
-        return int(float(first_number.group(1)))
-
-    return None
-
-
-def base_quantity(component, quantity, previous_qty, variables=None):
-    variables = variables or {}
+def base_quantity(component, quantity, previous_qty):
     component_key = slug(component)
 
     if component_key == "flush_shutter":
         return 1
 
-    if component_key == "architrave_vertical":
-        return 4
-
-    quantity_num = conditional_quantity(quantity, variables)
-
-    if quantity_num is not None:
-        return quantity_num
+    if quantity not in [None, ""]:
+        return int(float(quantity))
 
     return int(previous_qty.get(component_key, 1))
 
@@ -551,247 +197,54 @@ def manual_dimension_key(component, attribute):
     return f"manual_{slug(component)}_{slug(attribute)}"
 
 
-def fixed_dimension_value(component, attribute):
-    return FIXED_COMPONENT_DIMENSIONS.get(slug(component), {}).get(slug(attribute))
+def is_architrave_component(component):
+    return slug(component) in ["architrave_vertical", "architrave_horizontal"]
 
 
-def uploaded_dimension_value(rules, component, attribute):
-    component_key = slug(component)
-    attribute_key = slug(attribute)
-
-    for rule in rules:
-        if slug(rule_value(rule, "component")) != component_key:
-            continue
+def apply_fixed_architrave_value(component, attribute, value):
+    if is_architrave_component(component):
+        attribute_key = slug(attribute)
 
         if attribute_key == "width":
-            value = decimal_or_none(rule_value(rule, "fixed_width"))
-            if value is not None:
-                return value
+            return Decimal("40")
 
         if attribute_key == "thickness":
-            value = decimal_or_none(rule_value(rule, "fixed_thickness"))
-            if value is not None:
-                return value
+            return Decimal("12")
 
-    return None
+    return value
 
 
-def existing_component_input_key(component, attribute):
-    component_key = slug(component)
+def needs_manual_dimension(rule):
+    component, attribute, rule_type, formula, _ = rule
     attribute_key = slug(attribute)
-
-    if component_key == "flush_shutter" and attribute_key == "thickness":
-        return "shutter_thickness"
-
-    key = f"{component_key}_{attribute_key}"
-    return key if key in COMPONENT_INPUT_KEYS else None
-
-
-def has_fixed_or_uploaded_dimension(rules, component, attribute):
-    return (
-        fixed_dimension_value(component, attribute) is not None
-        or uploaded_dimension_value(rules, component, attribute) is not None
-    )
-
-
-def needs_manual_dimension(rule, rules):
-    component = rule_value(rule, "component")
-    attribute = rule_value(rule, "attribute")
-    rule_type = str(rule_value(rule, "rule_type") or "").strip().lower()
-    formula = str(rule_value(rule, "formula") or "").strip()
-    attribute_key = slug(attribute)
-
-    if existing_component_input_key(component, attribute):
-        return False
+    rule_type = str(rule_type or "").strip().lower()
+    formula = normalize_formula(formula)
 
     return (
         attribute_key in ["width", "thickness"]
-        and not has_fixed_or_uploaded_dimension(rules, component, attribute)
         and rule_type not in ["formula", "fomula"]
         and formula == ""
     )
-
-
-def selected_component_manual_dimensions(rules):
-    component_attributes = {}
-
-    for rule in rules:
-        component = rule_value(rule, "component")
-        attribute = rule_value(rule, "attribute")
-        component_key = slug(component)
-        attribute_key = slug(attribute)
-
-        if component_key not in component_attributes:
-            component_attributes[component_key] = {
-                "component": component,
-                "attributes": set(),
-            }
-
-        component_attributes[component_key]["attributes"].add(attribute_key)
-
-    manual_dimensions = []
-
-    for component_data in component_attributes.values():
-        component = component_data["component"]
-        attributes = component_data["attributes"]
-
-        for attribute in ["width", "thickness"]:
-            if has_fixed_or_uploaded_dimension(rules, component, attribute):
-                continue
-
-            if existing_component_input_key(component, attribute):
-                continue
-
-            if attribute not in attributes:
-                manual_dimensions.append((component, attribute))
-
-    for rule in rules:
-        if needs_manual_dimension(rule, rules):
-            item = (rule_value(rule, "component"), rule_value(rule, "attribute"))
-
-            if item not in manual_dimensions:
-                manual_dimensions.append(item)
-
-    return manual_dimensions
-
-
-def calculated_variable_keys(rules):
-    keys = set()
-
-    for rule in rules:
-        component_key = slug(rule_value(rule, "component"))
-        attribute_key = slug(rule_value(rule, "attribute"))
-
-        keys.add(component_key)
-        keys.add(f"{component_key}_{attribute_key}")
-
-    return keys
-
-
-def product_input_keys(product_cat, product_code, rules):
-    if is_door_product(product_cat, product_code):
-        return [
-            "opening_length",
-            "opening_width",
-            "vertical_clearance",
-            "horizontal_clearance",
-            "architrave_extra_length",
-            "architrave_extra_width",
-            "frame_horizontal_thickness",
-            "frame_vertical_thickness",
-            "shutter_thickness",
-        ]
-
-    if is_fw3_product(product_cat, product_code):
-        return [
-            "opening_height_1",
-            "opening_height_2",
-            "opening_length_1",
-            "opening_length_2",
-            "mesh_yes",
-        ]
-
-    formula_vars = set()
-
-    for rule in rules:
-        rule_type = str(rule_value(rule, "rule_type") or "").strip().lower()
-        formula = rule_value(rule, "formula")
-
-        if rule_type in ["formula", "fomula"]:
-            formula_vars.update(extract_formula_variables(formula, rules))
-
-    formula_vars -= calculated_variable_keys(rules)
-    formula_vars.discard("quantity")
-    formula_vars.discard("lh_quantity")
-    formula_vars.discard("rh_quantity")
-
-    if is_fw_product(product_cat, product_code):
-        formula_vars.add("mesh_yes")
-
-    return sorted(formula_vars)
-
-
-def get_dimension_value(component, attribute, variables, rules):
-    fixed = fixed_dimension_value(component, attribute)
-
-    if fixed is not None:
-        return fixed
-
-    uploaded = uploaded_dimension_value(rules, component, attribute)
-
-    if uploaded is not None:
-        return uploaded
-
-    input_key = existing_component_input_key(component, attribute)
-
-    if input_key:
-        return Decimal(str(round(float(variables.get(input_key, 0.0)), 2)))
-
-    manual_key = manual_dimension_key(component, attribute)
-
-    if manual_key in variables:
-        return Decimal(str(round(float(variables.get(manual_key, 0.0)), 2)))
-
-    return None
-
-
-def apply_fixed_or_uploaded_component_value(component, attribute, value, rules):
-    fixed = fixed_dimension_value(component, attribute)
-
-    if fixed is not None:
-        return fixed
-
-    uploaded = uploaded_dimension_value(rules, component, attribute)
-
-    if uploaded is not None and slug(attribute) in ["width", "thickness"]:
-        return uploaded
-
-    return value
 
 
 def store_calculated_value(variables, component, attribute, value):
     if value is None:
         return
 
-    component_key = normalize_variable(slug(component))
-    attribute_key = normalize_variable(slug(attribute))
+    component_key = slug(component)
+    attribute_key = slug(attribute)
     numeric_value = float(value)
 
-    # Always store the fully-qualified key e.g. glass_shutter_width_top_1_width
-    full_key = f"{component_key}_{attribute_key}"
-    variables[full_key] = numeric_value
+    keys = {
+        component_key,
+        f"{component_key}_{attribute_key}",
+    }
 
-    # FIX 1: only write the bare component key (e.g. glass_shutter_width_top_1)
-    # when the attribute is 'length'.  Previously every attribute overwrote it,
-    # so a later width/thickness rule silently clobbered the length value that
-    # downstream formulas depend on.  Now:
-    #   - length   → always writes the bare key (primary dimension)
-    #   - anything else → writes the bare key only if it has not been set yet
-    #     (safe first-seen fallback, preserves door product behaviour)
-    if attribute_key == "length":
-        variables[component_key] = numeric_value
-    elif component_key not in variables:
-        variables[component_key] = numeric_value
+    if attribute_key in ["length", "width", "height", "thickness"]:
+        keys.add(f"{component_key}_{attribute_key}")
 
-
-def calculate_cft(length, width, thickness, quantity, round_value=True):
-    length_num = clean_number(length)
-    width_num = clean_number(width)
-    thickness_num = clean_number(thickness)
-    quantity_num = clean_number(quantity)
-
-    if length_num is None or quantity_num is None:
-        return Decimal("0.00")
-
-    if width_num is None or thickness_num is None:
-        return Decimal("0.00")
-
-    cft = length_num * width_num * thickness_num / 1000000000 * 35.315 * quantity_num
-
-    if round_value:
-        return Decimal(str(round(cft, 2)))
-
-    return Decimal(str(cft))
+    for key in keys:
+        variables[key] = numeric_value
 
 
 def ensure_generated_components_table(conn, cur):
@@ -808,16 +261,10 @@ def ensure_generated_components_table(conn, cur):
             calculated_value TEXT,
             width NUMERIC,
             thickness NUMERIC,
-            cft NUMERIC,
             orientation TEXT,
             qty INTEGER,
             created_at TIMESTAMP DEFAULT NOW()
         )
-    """)
-
-    safe_execute(conn, cur, """
-        ALTER TABLE generated_components
-        ADD COLUMN IF NOT EXISTS cft NUMERIC
     """)
 
     safe_execute(conn, cur, """
@@ -837,25 +284,8 @@ def ensure_generated_components_table(conn, cur):
     conn.commit()
 
 
-def reset_generated_state_if_product_changed(state_key):
-    previous_key = st.session_state.get("generated_component_product_state_key")
-
-    if previous_key and previous_key != state_key:
-        for key in [
-            "generated_component_preview",
-            "generated_component_tracking_rows",
-            "generated_component_errors",
-            "generated_lh_quantity",
-            "generated_rh_quantity",
-            "generated_total_quantity",
-            "generated_shutter_thickness",
-        ]:
-            st.session_state.pop(key, None)
-
-    st.session_state["generated_component_product_state_key"] = state_key
-
-
 def show_component_calculator(conn, cur):
+
     st.title("Component Calculator")
 
     ensure_generated_components_table(conn, cur)
@@ -915,126 +345,111 @@ def show_component_calculator(conn, cur):
         st.warning("No products found. Upload component architecture first.")
         return
 
-    product_options = build_product_options(products)
+    product_options = [f"{p[0]} | {p[1]}" for p in products]
 
     with col4:
         selected_product = st.selectbox("Product", product_options)
 
     product_cat, product_code = selected_product.split(" | ", 1)
-    uses_orientation = is_door_product(product_cat, product_code)
 
-    state_key = f"{project_name}_{unit_type}_{product_cat}_{product_code}"
-    reset_generated_state_if_product_changed(state_key)
+    safe_execute(conn, cur, """
+        SELECT
+            component,
+            attribute,
+            type,
+            formula_used,
+            quantity
+        FROM product_component_rules
+        WHERE product_cat = %s
+        AND product_code = %s
+    """, (product_cat, product_code))
 
-    rules = load_product_rules(conn, cur, product_cat, product_code)
+    rules = cur.fetchall()
 
     if not rules:
         st.warning("No component rules found for selected product.")
         return
 
     st.markdown("---")
-
-    if uses_orientation:
-        st.subheader("House Wise LH / RH Quantity")
-
-        house_qty_df = pd.DataFrame({
-            "House Number": selected_houses,
-            "LH Quantity": [0 for _ in selected_houses],
-            "RH Quantity": [0 for _ in selected_houses],
-        })
-
-        edited_house_qty_df = st.data_editor(
-            house_qty_df,
-            use_container_width=True,
-            hide_index=True,
-            key=f"house_wise_lh_rh_qty_{state_key}",
-            disabled=["House Number"]
-        )
-
-        house_qty_map = {
-            str(row["House Number"]): {
-                "lh_quantity": clean_int(row["LH Quantity"]),
-                "rh_quantity": clean_int(row["RH Quantity"]),
-                "quantity": clean_int(row["LH Quantity"]) + clean_int(row["RH Quantity"]),
-            }
-            for _, row in edited_house_qty_df.iterrows()
-        }
-
-        total_lh_quantity = sum(item["lh_quantity"] for item in house_qty_map.values())
-        total_rh_quantity = sum(item["rh_quantity"] for item in house_qty_map.values())
-        total_product_quantity = total_lh_quantity + total_rh_quantity
-
-        st.info(
-            f"Total LH Quantity: {total_lh_quantity} | Total RH Quantity: {total_rh_quantity} | Total Quantity: {total_product_quantity}"
-        )
-
-    else:
-        st.subheader("House Wise Quantity")
-
-        house_qty_df = pd.DataFrame({
-            "House Number": selected_houses,
-            "Quantity": [0 for _ in selected_houses],
-        })
-
-        edited_house_qty_df = st.data_editor(
-            house_qty_df,
-            use_container_width=True,
-            hide_index=True,
-            key=f"house_wise_qty_{state_key}",
-            disabled=["House Number"]
-        )
-
-        house_qty_map = {
-            str(row["House Number"]): {
-                "lh_quantity": 0,
-                "rh_quantity": 0,
-                "quantity": clean_int(row["Quantity"]),
-            }
-            for _, row in edited_house_qty_df.iterrows()
-        }
-
-        total_lh_quantity = 0
-        total_rh_quantity = 0
-        total_product_quantity = sum(item["quantity"] for item in house_qty_map.values())
-
-        st.info(f"Total Quantity: {total_product_quantity}")
-
-    st.markdown("---")
     st.subheader("User Based Data")
 
+    required_variables = set()
+
+    for rule in rules:
+        for variable in extract_formula_variables(rule[3]):
+            required_variables.add(variable)
+
+    for variable in DEFAULT_VALUES:
+        required_variables.add(variable)
+
+    generated_variables = set()
+
+    for component, attribute, _, _, _ in rules:
+        component_key = slug(component)
+        attribute_key = slug(attribute)
+        generated_variables.add(component_key)
+        generated_variables.add(f"{component_key}_{attribute_key}")
+
+    required_variables = required_variables - generated_variables
+
     variables = {}
-    input_keys = product_input_keys(product_cat, product_code, rules)
 
-    if input_keys:
-        input_cols = st.columns(4)
+    st.markdown("#### Opening Size")
+    open_col1, open_col2 = st.columns(2)
 
-        for idx, key in enumerate(input_keys):
-            with input_cols[idx % 4]:
-                if key == "mesh_yes":
-                    mesh_choice = st.selectbox(
-                        "Mesh",
-                        ["No", "Yes"],
-                        key=f"input_{state_key}_{key}"
-                    )
-                    variables[key] = 1 if mesh_choice == "Yes" else 0
-                else:
-                    variables[key] = st.number_input(
-                        label_from_key(key),
-                        value=float(DEFAULT_VALUES.get(key, 0.0)),
-                        step=1.0,
-                        format="%.2f",
-                        key=f"input_{state_key}_{key}"
-                    )
-    else:
-        st.info("No user based inputs required for this product.")
+    with open_col1:
+        variables["opening_length"] = st.number_input(
+            "Opening Length",
+            value=float(DEFAULT_VALUES["opening_length"]),
+            step=1.0,
+            format="%.2f"
+        )
 
-    manual_dimensions = selected_component_manual_dimensions(rules)
+    with open_col2:
+        variables["opening_width"] = st.number_input(
+            "Opening Width",
+            value=float(DEFAULT_VALUES["opening_width"]),
+            step=1.0,
+            format="%.2f"
+        )
 
-    if manual_dimensions:
+    st.markdown("#### Component Inputs")
+
+    input_fields = [
+        ("vertical_clearance", "Vertical Clearance"),
+        ("horizontal_clearance", "Horizontal Clearance"),
+        ("architrave_extra_length", "Architrave Extra Length"),
+        ("architrave_extra_width", "Architrave Extra Width"),
+        ("frame_horizontal_thickness", "Frame Horizontal Thickness"),
+        ("frame_vertical_thickness", "Frame Vertical Thickness"),
+        ("shutter_thickness", "Shutter Thickness"),
+        ("lh_quantity", "LH Quantity"),
+        ("rh_quantity", "RH Quantity"),
+    ]
+
+    input_cols = st.columns(4)
+
+    for idx, (key, label) in enumerate(input_fields):
+        with input_cols[idx % 4]:
+            variables[key] = st.number_input(
+                label,
+                value=float(DEFAULT_VALUES.get(key, 0.0)),
+                step=1.0,
+                format="%.2f"
+            )
+
+    manual_rules = [
+        rule
+        for rule in rules
+        if needs_manual_dimension(rule)
+    ]
+
+    if manual_rules:
         st.markdown("#### Manual Component Dimensions")
         manual_cols = st.columns(4)
 
-        for idx, (component, attribute) in enumerate(manual_dimensions):
+        for idx, rule in enumerate(manual_rules):
+            component, attribute, _, _, _ = rule
             key = manual_dimension_key(component, attribute)
 
             with manual_cols[idx % 4]:
@@ -1042,16 +457,52 @@ def show_component_calculator(conn, cur):
                     f"{component} {attribute}".title(),
                     value=0.0,
                     step=1.0,
-                    format="%.2f",
-                    key=f"manual_input_{state_key}_{slug(component)}_{slug(attribute)}_{idx}"
+                    format="%.2f"
+                )
+
+    extra_variables = sorted(
+        required_variables - {
+            "opening_length",
+            "opening_width",
+            "vertical_clearance",
+            "horizontal_clearance",
+            "architrave_extra_length",
+            "architrave_extra_width",
+            "frame_horizontal_thickness",
+            "frame_vertical_thickness",
+            "shutter_thickness",
+            "lh_quantity",
+            "rh_quantity",
+        }
+    )
+
+    if extra_variables:
+        st.markdown("#### Other Required Inputs")
+        extra_cols = st.columns(4)
+
+        for idx, variable in enumerate(extra_variables):
+            with extra_cols[idx % 4]:
+                variables[variable] = st.number_input(
+                    variable.replace("_", " ").title(),
+                    value=float(DEFAULT_VALUES.get(variable, 0.0)),
+                    step=1.0,
+                    format="%.2f"
                 )
 
     st.markdown("---")
 
-    if st.button("Generate Components", key=f"generate_components_{state_key}"):
+    if st.button("Generate Components"):
 
         if not selected_houses:
             st.warning("Please select at least one house number.")
+            return
+
+        lh_quantity = int(float(variables.get("lh_quantity", 0)))
+        rh_quantity = int(float(variables.get("rh_quantity", 0)))
+        product_qty_multiplier = lh_quantity + rh_quantity
+
+        if product_qty_multiplier <= 0:
+            st.warning("Please enter LH Quantity or RH Quantity.")
             return
 
         preview_rows = []
@@ -1059,55 +510,46 @@ def show_component_calculator(conn, cur):
         errors_found = False
 
         for house_number in selected_houses:
-            house_qty = house_qty_map.get(str(house_number), {})
-            lh_quantity = int(float(house_qty.get("lh_quantity", 0)))
-            rh_quantity = int(float(house_qty.get("rh_quantity", 0)))
-            product_qty_multiplier = int(float(house_qty.get("quantity", 0)))
-
-            if product_qty_multiplier <= 0:
-                st.warning(f"Please enter quantity for house {house_number}.")
-                errors_found = True
-                continue
 
             house_variables = variables.copy()
-            house_variables["lh_quantity"] = lh_quantity
-            house_variables["rh_quantity"] = rh_quantity
-            house_variables["quantity"] = product_qty_multiplier
-
             pending_rules = list(rules)
             calculated_rules = []
             previous_qty = {}
             component_tracking_map = {}
-            loop_count = 0
 
             while pending_rules:
-                loop_count += 1
-
-                if loop_count > 20:
-                    st.error("Infinite dependency loop detected")
-                    errors_found = True
-                    break
-
                 progressed = False
                 next_pending = []
-                dependency_errors = []
 
                 for rule in pending_rules:
-                    component = str(rule_value(rule, "component")).strip()
-                    attribute = str(rule_value(rule, "attribute")).strip()
-                    rule_type = str(rule_value(rule, "rule_type") or "").strip().lower()
-                    formula = rule_value(rule, "formula")
-                    quantity = rule_value(rule, "quantity")
+                    component = str(rule[0]).strip()
+                    attribute = str(rule[1]).strip()
+                    rule_type = str(rule[2] or "").strip().lower()
+                    formula = rule[3]
+                    quantity = rule[4]
 
-                    component_qty = base_quantity(component, quantity, previous_qty, house_variables)
-                    total_quantity = int(component_qty * product_qty_multiplier)
+                    component_qty = base_quantity(
+                        component,
+                        quantity,
+                        previous_qty
+                    )
+
+                    total_quantity = int(
+                        component_qty * product_qty_multiplier
+                    )
 
                     try:
                         if rule_type in ["formula", "fomula"]:
-                            value = evaluate_formula(formula, house_variables, rules)
+                            value = evaluate_formula(formula, house_variables)
 
-                        elif needs_manual_dimension(rule, rules):
-                            value = get_dimension_value(component, attribute, variables, rules)
+                        elif needs_manual_dimension(rule):
+                            value = Decimal(str(round(
+                                float(variables.get(
+                                    manual_dimension_key(component, attribute),
+                                    0.0
+                                )),
+                                2
+                            )))
 
                         else:
                             value = fixed_value(formula, quantity)
@@ -1115,11 +557,10 @@ def show_component_calculator(conn, cur):
                         if value is None:
                             value = Decimal("0")
 
-                        value = apply_fixed_or_uploaded_component_value(
+                        value = apply_fixed_architrave_value(
                             component,
                             attribute,
-                            value,
-                            rules
+                            value
                         )
 
                         store_calculated_value(
@@ -1130,7 +571,6 @@ def show_component_calculator(conn, cur):
                         )
 
                         previous_qty[slug(component)] = component_qty
-                        normalized_formula = normalize_formula_for_eval(formula, rules, house_variables)
 
                         calculated_rules.append({
                             "House Number": house_number,
@@ -1138,13 +578,12 @@ def show_component_calculator(conn, cur):
                             "Component": component,
                             "Attribute": attribute,
                             "Type": "formula" if rule_type == "fomula" else rule_type,
-                            "Formula": normalized_formula,
+                            "Formula": normalize_formula(formula),
                             "Value": value,
                             "Base Quantity": component_qty,
                             "Total Quantity": total_quantity,
                             "LH Quantity": lh_quantity,
                             "RH Quantity": rh_quantity,
-                            "Quantity": product_qty_multiplier,
                         })
 
                         tracking_key = (
@@ -1164,15 +603,12 @@ def show_component_calculator(conn, cur):
                                 "orientation": "",
                                 "component": component,
                                 "quantity": total_quantity,
-                                "lh_quantity": lh_quantity,
-                                "rh_quantity": rh_quantity,
-                                "product_quantity": product_qty_multiplier,
                                 "attributes": {}
                             }
 
                         component_tracking_map[tracking_key]["attributes"][attribute] = {
                             "type": "formula" if rule_type == "fomula" else rule_type,
-                            "formula": normalized_formula,
+                            "formula": normalize_formula(formula),
                             "value": float(value),
                             "base_quantity": component_qty,
                         }
@@ -1180,9 +616,8 @@ def show_component_calculator(conn, cur):
                         progressed = True
 
                     except FormulaError as e:
-                        if "Missing dependency variable" in str(e):
+                        if "Missing variable" in str(e):
                             next_pending.append(rule)
-                            dependency_errors.append((rule, str(e)))
                         else:
                             errors_found = True
                             st.error(f"{house_number} - {component} / {attribute}: {e}")
@@ -1192,13 +627,18 @@ def show_component_calculator(conn, cur):
                         st.error(f"{house_number} - {component} / {attribute}: {e}")
 
                 if not progressed:
-                    for rule, error_message in dependency_errors:
-                        component = str(rule_value(rule, "component")).strip()
-                        attribute = str(rule_value(rule, "attribute")).strip()
-                        formula = rule_value(rule, "formula")
-                        quantity = rule_value(rule, "quantity")
-                        rule_type = str(rule_value(rule, "rule_type") or "").strip().lower()
-                        component_qty = base_quantity(component, quantity, previous_qty, house_variables)
+                    for rule in next_pending:
+                        component = str(rule[0]).strip()
+                        attribute = str(rule[1]).strip()
+                        formula = rule[3]
+                        quantity = rule[4]
+                        rule_type = str(rule[2] or "").strip().lower()
+
+                        component_qty = base_quantity(
+                            component,
+                            quantity,
+                            previous_qty
+                        )
 
                         preview_rows.append({
                             "House Number": house_number,
@@ -1206,17 +646,18 @@ def show_component_calculator(conn, cur):
                             "Component": component,
                             "Attribute": attribute,
                             "Type": "formula" if rule_type == "fomula" else rule_type,
-                            "Formula": normalize_formula_for_eval(formula, rules, house_variables),
+                            "Formula": normalize_formula(formula),
                             "Value": None,
                             "Base Quantity": component_qty,
                             "Total Quantity": int(component_qty * product_qty_multiplier),
                             "LH Quantity": lh_quantity,
                             "RH Quantity": rh_quantity,
-                            "Quantity": product_qty_multiplier,
                         })
 
+                        missing = ", ".join(extract_formula_variables(formula))
+
                         st.error(
-                            f"{house_number} - {component} / {attribute}: {error_message}"
+                            f"{house_number} - {component} / {attribute}: Missing dependency. Required: {missing}"
                         )
 
                     errors_found = True
@@ -1224,151 +665,98 @@ def show_component_calculator(conn, cur):
 
                 pending_rules = next_pending
 
-            for row in component_tracking_map.values():
-                for attribute in ["width", "thickness"]:
-                    if attribute in row["attributes"]:
-                        continue
-
-                    value = get_dimension_value(
-                        row["component"],
-                        attribute,
-                        variables,
-                        rules
-                    )
-
-                    if value is None:
-                        continue
-
-                    fallback_qty = base_quantity(
-                        row["component"],
-                        None,
-                        previous_qty,
-                        house_variables
-                    )
-
-                    row["attributes"][attribute] = {
-                        "type": "dimension",
-                        "formula": "",
-                        "value": float(value),
-                        "base_quantity": fallback_qty,
-                    }
-
-                    calculated_rules.append({
-                        "House Number": house_number,
-                        "Product": product_code,
-                        "Component": row["component"],
-                        "Attribute": attribute,
-                        "Type": "dimension",
-                        "Formula": "",
-                        "Value": value,
-                        "Base Quantity": fallback_qty,
-                        "Total Quantity": row["quantity"],
-                        "LH Quantity": lh_quantity,
-                        "RH Quantity": rh_quantity,
-                        "Quantity": product_qty_multiplier,
-                    })
-
             preview_rows.extend(calculated_rules)
             tracking_rows.extend(component_tracking_map.values())
 
         st.session_state["generated_component_preview"] = preview_rows
         st.session_state["generated_component_tracking_rows"] = tracking_rows
         st.session_state["generated_component_errors"] = errors_found
-        st.session_state["generated_lh_quantity"] = total_lh_quantity
-        st.session_state["generated_rh_quantity"] = total_rh_quantity
-        st.session_state["generated_total_quantity"] = total_product_quantity
-        st.session_state["generated_shutter_thickness"] = variables.get("shutter_thickness", "")
+        st.session_state["generated_lh_quantity"] = lh_quantity
+        st.session_state["generated_rh_quantity"] = rh_quantity
+        st.session_state["generated_shutter_thickness"] = variables.get(
+            "shutter_thickness",
+            ""
+        )
 
     if "generated_component_preview" in st.session_state:
+
         st.subheader("Generated Components")
 
         generated_lh = st.session_state.get("generated_lh_quantity", 0)
         generated_rh = st.session_state.get("generated_rh_quantity", 0)
-        generated_total = st.session_state.get("generated_total_quantity", 0)
 
-        if uses_orientation:
-            st.info(
-                f"Total LH Quantity: {generated_lh} | Total RH Quantity: {generated_rh} | Total Quantity: {generated_total}"
-            )
-        else:
-            st.info(f"Total Quantity: {generated_total}")
+        st.info(
+            f"LH Quantity: {generated_lh} | RH Quantity: {generated_rh}"
+        )
 
-        df_preview_raw = pd.DataFrame(st.session_state["generated_component_preview"])
-        house_rows = []
+        df_preview_raw = pd.DataFrame(
+            st.session_state["generated_component_preview"]
+        )
+
+        display_rows = []
 
         group_cols = [
             "House Number",
             "Product",
             "Component",
             "Total Quantity",
-            "LH Quantity",
-            "RH Quantity",
-            "Quantity",
         ]
 
-        for _, group_df in df_preview_raw.groupby(group_cols, dropna=False, sort=False):
+        for _, group_df in df_preview_raw.groupby(
+            group_cols,
+            dropna=False,
+            sort=False
+        ):
             first_row = group_df.iloc[0].to_dict()
             values = {}
 
             for _, row in group_df.iterrows():
-                values[str(row["Attribute"]).strip().lower()] = row["Value"]
+                attr = str(row["Attribute"]).strip().lower()
+                values[attr] = row["Value"]
 
-            length_value = values.get("length", "")
-            width_value = values.get("width", "")
-            thickness_value = values.get("thickness", values.get("height", ""))
+            component_name = str(
+                first_row["Component"]
+            ).strip().lower()
 
-            cft_value = calculate_cft(
-                length_value,
-                width_value,
-                thickness_value,
-                first_row["Total Quantity"],
-                round_value=True
+            thickness_value = values.get(
+                "thickness",
+                values.get("height", "")
             )
 
-            row_data = {
+            width_value = values.get("width", "")
+
+            if slug(component_name) in ["architrave_vertical", "architrave_horizontal"]:
+                width_value = Decimal("40")
+                thickness_value = Decimal("12")
+
+            if component_name == "flush shutter":
+                thickness_value = st.session_state.get(
+                    "generated_shutter_thickness",
+                    ""
+                )
+
+            display_rows.append({
                 "House Number": first_row["House Number"],
                 "Product": first_row["Product"],
                 "Component": first_row["Component"],
-                "Length": length_value,
+                "Length": values.get("length", ""),
                 "Width": width_value,
                 "Thickness": thickness_value,
-            }
+                "Total Quantity": first_row["Total Quantity"],
+            })
 
-            if uses_orientation:
-                row_data["LH Quantity"] = first_row["LH Quantity"]
-                row_data["RH Quantity"] = first_row["RH Quantity"]
-            else:
-                row_data["Quantity"] = first_row["Quantity"]
+        df_preview = pd.DataFrame(display_rows)
 
-            row_data["Total Quantity"] = first_row["Total Quantity"]
-            row_data["CFT"] = cft_value
-            house_rows.append(row_data)
+        st.dataframe(
+            df_preview,
+            use_container_width=True,
+            hide_index=True
+        )
 
-        total_cft = sum(clean_number(row.get("CFT")) or 0 for row in house_rows)
-
-        total_row = {
-            "House Number": "",
-            "Product": "",
-            "Component": "CFT Total",
-            "Length": "",
-            "Width": "",
-            "Thickness": "",
-        }
-
-        if uses_orientation:
-            total_row["LH Quantity"] = ""
-            total_row["RH Quantity"] = ""
-        else:
-            total_row["Quantity"] = ""
-
-        total_row["Total Quantity"] = ""
-        total_row["CFT"] = Decimal(str(round(total_cft, 2)))
-        house_rows.append(total_row)
-
-        df_preview = pd.DataFrame(house_rows)
-        st.dataframe(df_preview, use_container_width=True, hide_index=True)
-
-        errors_found = st.session_state.get("generated_component_errors", False)
+        errors_found = st.session_state.get(
+            "generated_component_errors",
+            False
+        )
 
         if errors_found or df_preview_raw["Value"].isna().any():
             st.warning("Some components did not calculate. Fix formulas before confirming.")
@@ -1377,16 +765,16 @@ def show_component_calculator(conn, cur):
 
         st.markdown("---")
 
-        if st.button(
-            "Confirm Components and Send to Tracking",
-            type="primary",
-            key=f"confirm_components_{state_key}"
-        ):
+        if st.button("Confirm Components and Send to Tracking", type="primary"):
+
             if errors_found or df_preview_raw["Value"].isna().any():
                 st.warning("Please fix formula errors before sending to tracking.")
                 return
 
-            tracking_rows = st.session_state.get("generated_component_tracking_rows", [])
+            tracking_rows = st.session_state.get(
+                "generated_component_tracking_rows",
+                []
+            )
 
             if not tracking_rows:
                 st.warning("No generated components to save.")
@@ -1412,13 +800,15 @@ def show_component_calculator(conn, cur):
                     if "thickness" in attrs:
                         thickness_value = attrs["thickness"]["value"]
 
-                    cft_value = calculate_cft(
-                        length_value,
-                        width_value,
-                        thickness_value,
-                        row["quantity"],
-                        round_value=True
-                    )
+                    if is_architrave_component(row["component"]):
+                        width_value = 40
+                        thickness_value = 12
+
+                    if str(row["component"]).strip().lower() == "flush shutter":
+                        thickness_value = st.session_state.get(
+                            "generated_shutter_thickness",
+                            None
+                        )
 
                     generated_insert_rows.append((
                         row["project_name"],
@@ -1431,7 +821,6 @@ def show_component_calculator(conn, cur):
                         length_value,
                         width_value,
                         thickness_value,
-                        cft_value,
                         row["orientation"],
                         row["quantity"],
                     ))
@@ -1461,7 +850,6 @@ def show_component_calculator(conn, cur):
                         calculated_value,
                         width,
                         thickness,
-                        cft,
                         orientation,
                         qty
                     )
@@ -1489,7 +877,10 @@ def show_component_calculator(conn, cur):
                 )
 
                 conn.commit()
-                st.success(f"{len(generated_insert_rows)} component(s) sent to tracking successfully")
+
+                st.success(
+                    f"{len(generated_insert_rows)} component(s) sent to tracking successfully"
+                )
 
             except Exception as e:
                 conn.rollback()
