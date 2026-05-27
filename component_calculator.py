@@ -118,10 +118,6 @@ def is_fw_product(product_cat, product_code):
     return "fw" in text or "french_window" in text
 
 
-def is_fw3_product(product_cat, product_code):
-    return "fw3" in slug(f"{product_cat} {product_code}")
-
-
 def normalize_variable(var_name):
     var_name = slug(var_name)
     return VARIABLE_ALIASES.get(var_name, var_name)
@@ -225,15 +221,8 @@ def load_product_rules(conn, cur, product_cat, selected_product_code):
         f"{quantity_col} AS quantity",
     ]
 
-    if width_col:
-        select_cols.append(f"{width_col} AS fixed_width")
-    else:
-        select_cols.append("NULL AS fixed_width")
-
-    if thickness_col:
-        select_cols.append(f"{thickness_col} AS fixed_thickness")
-    else:
-        select_cols.append("NULL AS fixed_thickness")
+    select_cols.append(f"{width_col} AS fixed_width" if width_col else "NULL AS fixed_width")
+    select_cols.append(f"{thickness_col} AS fixed_thickness" if thickness_col else "NULL AS fixed_thickness")
 
     query = f"""
         SELECT {", ".join(select_cols)}
@@ -320,11 +309,7 @@ def split_joined_formula_token(token, known_keys):
         match = None
 
         for key in known_keys:
-            if remaining == key:
-                match = key
-                break
-
-            if remaining.startswith(key + "_"):
+            if remaining == key or remaining.startswith(key + "_"):
                 match = key
                 break
 
@@ -380,11 +365,7 @@ def repair_joined_formula_tokens(formula, rules, variables=None):
 
         return "(" + joined_parts_to_formula(parts) + ")"
 
-    return re.sub(
-        r"\b[A-Za-z_][A-Za-z0-9_]*\b",
-        replace_token,
-        formula
-    )
+    return re.sub(r"\b[A-Za-z_][A-Za-z0-9_]*\b", replace_token, formula)
 
 
 def normalize_formula_for_eval(formula, rules, variables=None):
@@ -399,12 +380,7 @@ def normalize_formula_for_eval(formula, rules, variables=None):
             formula = right.strip()
 
     for old_var, new_var in VARIABLE_ALIASES.items():
-        formula = re.sub(
-            rf"\b{old_var}\b",
-            new_var,
-            formula,
-            flags=re.IGNORECASE
-        )
+        formula = re.sub(rf"\b{old_var}\b", new_var, formula, flags=re.IGNORECASE)
 
     known_keys = formula_known_keys(rules, variables)
 
@@ -437,7 +413,6 @@ def extract_formula_variables(formula, rules=None, variables=None):
         return []
 
     ignore_words = {"abs", "min", "max", "round", "float", "int", "Decimal"}
-
     found = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", formula)
 
     return sorted({
@@ -679,15 +654,6 @@ def product_input_keys(product_cat, product_code, rules):
             "shutter_thickness",
         ]
 
-    if is_fw3_product(product_cat, product_code):
-        return [
-            "opening_height_1",
-            "opening_height_2",
-            "opening_length_1",
-            "opening_length_2",
-            "mesh_yes",
-        ]
-
     formula_vars = set()
 
     for rule in rules:
@@ -900,7 +866,7 @@ def build_components_excel(project_name, unit_type, product_code, generated_lh, 
     ws.column_dimensions["D"].width = 14
     ws.column_dimensions["E"].width = 20
     ws.column_dimensions["F"].width = 12
-    ws.column_dimensions["G"].width = 34
+    ws.column_dimensions["G"].width = 45
 
     ws.row_dimensions[1].height = 42
     ws.row_dimensions[2].height = 42
@@ -1434,6 +1400,12 @@ def show_component_calculator(conn, cur):
 
             component_name = str(first_row["Component"]).strip().lower()
 
+            total_component_quantity = int(
+                group_df[["House Number", "Total Quantity"]]
+                .drop_duplicates()["Total Quantity"]
+                .sum()
+            )
+
             if component_name == "flush shutter":
                 cft_value = Decimal("0")
             else:
@@ -1441,7 +1413,7 @@ def show_component_calculator(conn, cur):
                     length_value,
                     width_value,
                     thickness_value,
-                    first_row["Total Quantity"],
+                    total_component_quantity,
                     round_value=True
                 )
 
@@ -1450,7 +1422,7 @@ def show_component_calculator(conn, cur):
                 "Length": length_value,
                 "Width": width_value,
                 "Thickness": thickness_value,
-                "Total Quantity": first_row["Total Quantity"],
+                "Total Quantity": total_component_quantity,
                 "CFT": cft_value,
                 "LH & RH Details": "",
             }
@@ -1504,7 +1476,8 @@ def show_component_calculator(conn, cur):
 
         if uses_orientation:
             lh_rh_chunks = []
-            chunk_size = 2
+            available_rows = max(1, len(df_preview))
+            chunk_size = max(1, int((len(lh_rh_summary) + available_rows - 1) / available_rows))
 
             for i in range(0, len(lh_rh_summary), chunk_size):
                 lh_rh_chunks.append(
