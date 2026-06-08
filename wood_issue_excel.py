@@ -50,6 +50,9 @@ def build_components_excel(
     if prepared_date in [None, ""]:
         prepared_date = date.today().strftime("%d-%m-%Y")
 
+    if prepared_by in [None, ""]:
+        prepared_by = "Anup S Kalkundi"
+
     wb = Workbook()
     ws = wb.active
     ws.title = "Wood Issue Report"
@@ -98,27 +101,25 @@ def build_components_excel(
     ws.merge_cells("B2:D2")
     ws["B2"] = "PROJECT NAME"
     ws.merge_cells("E2:G2")
-    ws["E2"] = project_name
     ws.merge_cells("H2:K2")
     ws["H2"] = f"{project_name} {unit_type} - {product_code} Batch".strip()
 
     ws.merge_cells("B3:D3")
     ws["B3"] = "PROJECT CODE"
     ws.merge_cells("E3:G3")
-    ws["E3"] = project_code
     ws.merge_cells("H3:K3")
+    ws["H3"] = project_code
 
     ws.merge_cells("B4:D4")
     ws["B4"] = "PREPARED DATE"
     ws.merge_cells("E4:G4")
-    ws["E4"] = prepared_date
     ws.merge_cells("H4:K4")
+    ws["H4"] = prepared_date
 
     ws.merge_cells("B5:D5")
     ws["B5"] = "ORDER qty"
     ws.merge_cells("E5:G5")
-    ws["E5"] = order_qty
-    ws.merge_cells("H5:H5")
+    ws["H5"] = order_qty
 
     lh_rh_text = []
     if generated_lh:
@@ -197,20 +198,10 @@ def build_components_excel(
 
         ws.cell(excel_row, 1, serial_no)
 
-        ws.merge_cells(
-            start_row=excel_row,
-            start_column=2,
-            end_row=excel_row,
-            end_column=3,
-        )
+        ws.merge_cells(start_row=excel_row, start_column=2, end_row=excel_row, end_column=3)
         ws.cell(excel_row, 2, component)
 
-        ws.merge_cells(
-            start_row=excel_row,
-            start_column=5,
-            end_row=excel_row,
-            end_column=7,
-        )
+        ws.merge_cells(start_row=excel_row, start_column=5, end_row=excel_row, end_column=7)
         ws.cell(excel_row, 5, wood_shade)
 
         ws.cell(excel_row, 8, length)
@@ -236,12 +227,7 @@ def build_components_excel(
     last_data_row = start_row + len(data_rows) - 1
 
     if last_data_row >= start_row:
-        ws.merge_cells(
-            start_row=start_row,
-            start_column=4,
-            end_row=last_data_row,
-            end_column=4,
-        )
+        ws.merge_cells(start_row=start_row, start_column=4, end_row=last_data_row, end_column=4)
         ws.cell(start_row, 4).value = product_code
         ws.cell(start_row, 4).fill = grey_fill
         ws.cell(start_row, 4).font = big_font
@@ -249,12 +235,7 @@ def build_components_excel(
 
     total_row = start_row + len(data_rows)
 
-    ws.merge_cells(
-        start_row=total_row,
-        start_column=1,
-        end_row=total_row,
-        end_column=11,
-    )
+    ws.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=11)
     ws.cell(total_row, 12, round(total_cft, 2))
 
     for col in range(1, 15):
@@ -264,7 +245,7 @@ def build_components_excel(
         cell.alignment = center
         cell.font = header_font if col == 12 else normal_font
 
-    for cell_ref in ["E2", "E3", "E4", "E5", "H2", "I5", "H6", "J6", "K6", "L6"]:
+    for cell_ref in ["H2", "H3", "H4", "H5", "I5", "H6", "J6", "K6", "L6"]:
         ws[cell_ref].font = header_font
 
     widths = {
