@@ -809,9 +809,9 @@ def build_components_excel(
     ws = wb.active
     ws.title = "Wood Issue Report"
 
-    light_green = PatternFill("solid", fgColor="DDEBE5")
+    white_fill = PatternFill("solid", fgColor="FFFFFF")
     title_green = PatternFill("solid", fgColor="C6EFCE")
-    grey_fill = PatternFill("solid", fgColor="BFC8C3")
+    grey_fill = PatternFill("solid", fgColor="D9E1DD")
 
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -825,13 +825,17 @@ def build_components_excel(
     center = Alignment(horizontal="center", vertical="center")
     wrap_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-    total_qty = int((generated_lh or 0) + (generated_rh or 0))
+    generated_lh = clean_int(generated_lh)
+    generated_rh = clean_int(generated_rh)
+
+    total_qty = generated_lh + generated_rh
+
     if order_qty is None:
         order_qty = total_qty
 
-    for row in ws.iter_rows(min_row=1, max_row=30, min_col=1, max_col=14):
+    for row in ws.iter_rows(min_row=1, max_row=40, min_col=1, max_col=14):
         for cell in row:
-            cell.fill = light_green
+            cell.fill = white_fill
             cell.border = border
             cell.alignment = center
             cell.font = normal_font
@@ -869,7 +873,14 @@ def build_components_excel(
     ws.merge_cells("E5:G5")
     ws["H5"] = order_qty
     ws.merge_cells("I5:K5")
-    ws["I5"] = f"{generated_lh} LH" if generated_lh else ""
+
+    lh_rh_text = []
+    if generated_lh:
+        lh_rh_text.append(f"{generated_lh} LH")
+    if generated_rh:
+        lh_rh_text.append(f"{generated_rh} RH")
+
+    ws["I5"] = " / ".join(lh_rh_text)
 
     ws.merge_cells("B6:D6")
     ws.merge_cells("E6:G6")
@@ -892,9 +903,8 @@ def build_components_excel(
 
     ws.merge_cells("B7:C7")
     ws.merge_cells("E7:G7")
-    ws.merge_cells("M7:N7")
 
-    header_cells = {
+    headers = {
         "A7": "SL.\nNO.",
         "B7": "Item Code",
         "E7": "WOOD SHADE",
@@ -903,10 +913,11 @@ def build_components_excel(
         "J7": "THICK",
         "K7": "QTY",
         "L7": "CFT",
-        "M7": "REMARKS",
+        "M7": "LH & RH DETAILS",
+        "N7": "REMARKS",
     }
 
-    for cell_ref, value in header_cells.items():
+    for cell_ref, value in headers.items():
         ws[cell_ref] = value
         ws[cell_ref].font = header_font
         ws[cell_ref].alignment = wrap_center
@@ -928,8 +939,10 @@ def build_components_excel(
         thickness = row.get("Thickness", "")
         qty = row.get("Total Quantity", "")
         cft = row.get("CFT", "")
+        lh_rh_details = row.get("LH & RH Details", "")
 
         component_lower = str(component).strip().lower()
+
         if component_lower == "flush shutter":
             wood_shade = f"{thickness} mm BB" if thickness else "BB"
         else:
@@ -958,19 +971,14 @@ def build_components_excel(
         ws.cell(excel_row, 10, thickness)
         ws.cell(excel_row, 11, qty)
         ws.cell(excel_row, 12, cft)
-
-        ws.merge_cells(
-            start_row=excel_row,
-            start_column=13,
-            end_row=excel_row,
-            end_column=14
-        )
+        ws.cell(excel_row, 13, lh_rh_details)
+        ws.cell(excel_row, 14, "")
 
         for col in range(1, 15):
             cell = ws.cell(excel_row, col)
-            cell.fill = light_green
+            cell.fill = white_fill
             cell.border = border
-            cell.alignment = center
+            cell.alignment = wrap_center if col == 13 else center
             cell.font = item_font if col in [2, 5] else normal_font
 
         if clean_number(cft) is not None:
@@ -1004,7 +1012,7 @@ def build_components_excel(
 
     for col in range(1, 15):
         cell = ws.cell(total_row, col)
-        cell.fill = light_green
+        cell.fill = white_fill
         cell.border = border
         cell.alignment = center
         cell.font = header_font if col == 12 else normal_font
@@ -1025,8 +1033,8 @@ def build_components_excel(
         "J": 10,
         "K": 9,
         "L": 10,
-        "M": 14,
-        "N": 14,
+        "M": 32,
+        "N": 16,
     }
 
     for col, width in widths.items():
@@ -1040,7 +1048,7 @@ def build_components_excel(
     ws.row_dimensions[7].height = 34
 
     for row_no in range(start_row, total_row + 1):
-        ws.row_dimensions[row_no].height = 26
+        ws.row_dimensions[row_no].height = 28
 
     ws.freeze_panes = "A7"
 
@@ -1048,7 +1056,6 @@ def build_components_excel(
     output.seek(0)
 
     return output
-
 
 def ensure_generated_components_table(conn, cur):
     safe_execute(conn, cur, """
@@ -1681,6 +1688,11 @@ def show_component_calculator(conn, cur):
             df_preview,
             hide_index=True,
             use_container_width=True
+        )
+        prepared_by = st.selectbox(
+            "Prepared by",
+            ["Anup", "Mani"],
+            key=f"prepared_by_{state_key}"
         )
 
         excel_file = build_components_excel(
