@@ -890,7 +890,7 @@ def build_components_excel(
     ws["L6"] = prepared_by
     ws["L6"].font = header_font
 
-    ws.merge_cells("B7:D7")
+    ws.merge_cells("B7:C7")
     ws.merge_cells("E7:G7")
     ws.merge_cells("M7:N7")
 
@@ -941,7 +941,7 @@ def build_components_excel(
             start_row=excel_row,
             start_column=2,
             end_row=excel_row,
-            end_column=4
+            end_column=3
         )
         ws.cell(excel_row, 2, component)
 
