@@ -1,3 +1,4 @@
+from datetime import date
 from io import BytesIO
 
 import pandas as pd
@@ -38,13 +39,16 @@ def build_components_excel(
     generated_rh,
     df_preview,
     project_code="",
-    prepared_date="",
+    prepared_date=None,
     order_qty=None,
     opening_length="",
     opening_width="",
     prepared_by="",
 ):
     output = BytesIO()
+
+    if prepared_date in [None, ""]:
+        prepared_date = date.today().strftime("%d-%m-%Y")
 
     wb = Workbook()
     ws = wb.active
@@ -94,26 +98,27 @@ def build_components_excel(
     ws.merge_cells("B2:D2")
     ws["B2"] = "PROJECT NAME"
     ws.merge_cells("E2:G2")
+    ws["E2"] = project_name
     ws.merge_cells("H2:K2")
     ws["H2"] = f"{project_name} {unit_type} - {product_code} Batch".strip()
 
     ws.merge_cells("B3:D3")
     ws["B3"] = "PROJECT CODE"
     ws.merge_cells("E3:G3")
+    ws["E3"] = project_code
     ws.merge_cells("H3:K3")
-    ws["H3"] = project_code
 
     ws.merge_cells("B4:D4")
     ws["B4"] = "PREPARED DATE"
     ws.merge_cells("E4:G4")
+    ws["E4"] = prepared_date
     ws.merge_cells("H4:K4")
-    ws["H4"] = prepared_date
 
     ws.merge_cells("B5:D5")
     ws["B5"] = "ORDER qty"
     ws.merge_cells("E5:G5")
-    ws["H5"] = order_qty
-    ws.merge_cells("I5:K5")
+    ws["E5"] = order_qty
+    ws.merge_cells("H5:H5")
 
     lh_rh_text = []
     if generated_lh:
@@ -121,6 +126,7 @@ def build_components_excel(
     if generated_rh:
         lh_rh_text.append(f"{generated_rh} RH")
 
+    ws.merge_cells("I5:K5")
     ws["I5"] = " / ".join(lh_rh_text)
 
     ws.merge_cells("B6:D6")
@@ -258,7 +264,7 @@ def build_components_excel(
         cell.alignment = center
         cell.font = header_font if col == 12 else normal_font
 
-    for cell_ref in ["H2", "H3", "H4", "H5", "I5", "H6", "J6", "K6", "L6"]:
+    for cell_ref in ["E2", "E3", "E4", "E5", "H2", "I5", "H6", "J6", "K6", "L6"]:
         ws[cell_ref].font = header_font
 
     widths = {
