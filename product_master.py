@@ -2,28 +2,36 @@ import streamlit as st
 import pandas as pd
 
 
-def fetch_data(cur, query, params=None):
+# =========================================================
+# HELPERS
+# =========================================================
+def fetch_df(cur, query, params=None):
     cur.execute(query, params or ())
     rows = cur.fetchall()
-    columns = [desc[0] for desc in cur.description]
-    return pd.DataFrame(rows, columns=columns)
+    cols = [desc[0] for desc in cur.description]
+    return pd.DataFrame(rows, columns=cols)
 
 
+# =========================================================
+# PRODUCT MASTER PAGE
+# =========================================================
 def show_product_master(conn, cur):
+
     st.title("Product Master")
 
     # =====================================================
     # 1. COMPONENT LIBRARY CRUD
     # =====================================================
-    with st.expander("1. Component Library CRUD", expanded=True):
+    with st.expander("1. Component Library", expanded=True):
+
         st.subheader("Component Library")
 
-        components_df = fetch_data(
+        components_df = fetch_df(
             cur,
             """
-            SELECT *
+            SELECT id, component_name
             FROM component_library
-            ORDER BY id DESC
+            ORDER BY component_name
             """
         )
 
@@ -32,90 +40,39 @@ def show_product_master(conn, cur):
         st.markdown("### Add Component")
 
         with st.form("add_component_form"):
-            component_name = st.text_input("Component Name")
-            attribute = st.text_input("Attribute")
+            component_name = st.text_input(
+                "Component Name",
+                placeholder="Example: Frame Vertical"
+            )
 
-            submitted = st.form_submit_button("Add Component")
+            add_component = st.form_submit_button("Add Component")
 
-            if submitted:
-                if component_name.strip() == "" or attribute.strip() == "":
-                    st.warning("Please enter component name and attribute.")
+            if add_component:
+                if component_name.strip() == "":
+                    st.warning("Please enter component name.")
                 else:
                     cur.execute(
                         """
-                        INSERT INTO component_library
-                            (component_name, attribute)
-                        VALUES
-                            (%s, %s)
+                        INSERT INTO component_library (component_name)
+                        VALUES (%s)
                         """,
-                        (component_name, attribute)
+                        (component_name.strip(),)
                     )
                     conn.commit()
                     st.success("Component added successfully.")
                     st.rerun()
 
-        st.markdown("### Update Component")
-
-        if not components_df.empty:
-            component_options = {
-                f"{row['id']} - {row['component_name']} - {row['attribute']}": row["id"]
-                for _, row in components_df.iterrows()
-            }
-
-            selected_component = st.selectbox(
-                "Select Component to Update",
-                list(component_options.keys())
-            )
-
-            selected_component_id = component_options[selected_component]
-            selected_row = components_df[
-                components_df["id"] == selected_component_id
-            ].iloc[0]
-
-            with st.form("update_component_form"):
-                updated_component_name = st.text_input(
-                    "Updated Component Name",
-                    value=str(selected_row["component_name"])
-                )
-                updated_attribute = st.text_input(
-                    "Updated Attribute",
-                    value=str(selected_row["attribute"])
-                )
-
-                update_submitted = st.form_submit_button("Update Component")
-
-                if update_submitted:
-                    cur.execute(
-                        """
-                        UPDATE component_library
-                        SET component_name = %s,
-                            attribute = %s
-                        WHERE id = %s
-                        """,
-                        (
-                            updated_component_name,
-                            updated_attribute,
-                            selected_component_id
-                        )
-                    )
-                    conn.commit()
-                    st.success("Component updated successfully.")
-                    st.rerun()
-
-        else:
-            st.info("No components available to update.")
-
         st.markdown("### Delete Component")
 
         if not components_df.empty:
-            component_options_delete = {
-                f"{row['id']} - {row['component_name']} - {row['attribute']}": row["id"]
+            component_options = {
+                row["component_name"]: row["id"]
                 for _, row in components_df.iterrows()
             }
 
-            selected_delete_component = st.selectbox(
+            delete_component_name = st.selectbox(
                 "Select Component to Delete",
-                list(component_options_delete.keys())
+                list(component_options.keys())
             )
 
             if st.button("Delete Component"):
@@ -124,50 +81,57 @@ def show_product_master(conn, cur):
                     DELETE FROM component_library
                     WHERE id = %s
                     """,
-                    (component_options_delete[selected_delete_component],)
+                    (component_options[delete_component_name],)
                 )
                 conn.commit()
                 st.success("Component deleted successfully.")
                 st.rerun()
-
         else:
-            st.info("No components available to delete.")
+            st.info("No components available.")
 
     # =====================================================
     # 2. PRODUCT CREATION
     # =====================================================
     with st.expander("2. Product Creation", expanded=True):
-        st.subheader("Products")
 
-        products_df = fetch_data(
+        st.subheader("Create Product")
+
+        products_df = fetch_df(
             cur,
             """
-            SELECT *
+            SELECT id, product_name, category
             FROM products
-            ORDER BY id DESC
+            ORDER BY product_name
             """
         )
 
         st.dataframe(products_df, use_container_width=True)
 
         with st.form("create_product_form"):
-            product_name = st.text_input("Product Name")
-            product_description = st.text_area("Product Description")
+            product_name = st.text_input(
+                "Product Name",
+                placeholder="Example: D1-1.1"
+            )
 
-            product_submitted = st.form_submit_button("Create Product")
+            category = st.text_input(
+                "Category",
+                placeholder="Example: Door"
+            )
 
-            if product_submitted:
+            create_product = st.form_submit_button("Create Product")
+
+            if create_product:
                 if product_name.strip() == "":
                     st.warning("Please enter product name.")
+                elif category.strip() == "":
+                    st.warning("Please enter category.")
                 else:
                     cur.execute(
                         """
-                        INSERT INTO products
-                            (product_name, product_description)
-                        VALUES
-                            (%s, %s)
+                        INSERT INTO products (product_name, category)
+                        VALUES (%s, %s)
                         """,
-                        (product_name, product_description)
+                        (product_name.strip(), category.strip())
                     )
                     conn.commit()
                     st.success("Product created successfully.")
@@ -177,120 +141,140 @@ def show_product_master(conn, cur):
     # 3. PRODUCT DEFINITION
     # =====================================================
     with st.expander("3. Product Definition", expanded=True):
-        st.subheader("Define Product Rules")
 
-        products_df = fetch_data(
+        st.subheader("Define Component Attributes")
+
+        products_df = fetch_df(
             cur,
             """
-            SELECT *
+            SELECT id, product_name, category
             FROM products
             ORDER BY product_name
             """
         )
 
-        components_df = fetch_data(
+        components_df = fetch_df(
             cur,
             """
-            SELECT *
+            SELECT id, component_name
             FROM component_library
-            ORDER BY component_name, attribute
+            ORDER BY component_name
             """
         )
 
         if products_df.empty:
-            st.info("Create a product first.")
-        elif components_df.empty:
-            st.info("Create a component first.")
-        else:
-            product_options = {
-                row["product_name"]: row["id"]
-                for _, row in products_df.iterrows()
-            }
+            st.info("Please create a product first.")
+            return
 
-            component_options = {
-                f"{row['component_name']} - {row['attribute']}": row["id"]
-                for _, row in components_df.iterrows()
-            }
+        if components_df.empty:
+            st.info("Please add components first.")
+            return
 
-            selected_product = st.selectbox(
-                "Select Product",
-                list(product_options.keys())
+        product_options = {
+            f"{row['product_name']} - {row['category']}": row["id"]
+            for _, row in products_df.iterrows()
+        }
+
+        component_options = {
+            row["component_name"]: row["id"]
+            for _, row in components_df.iterrows()
+        }
+
+        selected_product_label = st.selectbox(
+            "Product",
+            list(product_options.keys())
+        )
+
+        selected_component_label = st.selectbox(
+            "Component",
+            list(component_options.keys())
+        )
+
+        attribute = st.selectbox(
+            "Attribute",
+            [
+                "Length",
+                "Width",
+                "Thickness",
+                "Quantity"
+            ]
+        )
+
+        attribute_type = st.selectbox(
+            "Attribute Type",
+            [
+                "Fixed",
+                "Manual",
+                "Formula"
+            ]
+        )
+
+        fixed_value = None
+        formula = None
+
+        if attribute_type == "Fixed":
+            fixed_value = st.number_input(
+                "Enter Fixed Value",
+                value=0.0,
+                step=1.0
             )
 
-            selected_component = st.selectbox(
-                "Select Component",
-                list(component_options.keys())
+        elif attribute_type == "Manual":
+            st.info("Manual value will be entered in calculator.")
+
+        elif attribute_type == "Formula":
+            formula = st.text_area(
+                "Enter Formula Expression",
+                placeholder=(
+                    "Examples:\n"
+                    "opening_length\n"
+                    "opening_width - 40\n"
+                    "shutter_width / 2"
+                )
             )
 
-            selected_component_id = component_options[selected_component]
-
-            selected_component_row = components_df[
-                components_df["id"] == selected_component_id
-            ].iloc[0]
-
-            selected_attribute = st.selectbox(
-                "Select Attribute",
-                [selected_component_row["attribute"]]
-            )
-
-            rule_type = st.selectbox(
-                "Select Type",
-                ["Formula", "Fixed", "Manual"]
-            )
-
-            formula = None
-            fixed_value = None
-
-            if rule_type == "Formula":
-                formula = st.text_area("Formula")
-
-            elif rule_type == "Fixed":
-                fixed_value = st.number_input("Fixed Value", value=0.0)
-
-            elif rule_type == "Manual":
-                st.info("Manual value will be entered during calculation.")
-
-            if st.button("Save Product Rule"):
-                if rule_type == "Formula" and not formula:
-                    st.warning("Please enter formula.")
-                else:
-                    cur.execute(
-                        """
-                        INSERT INTO product_component_rules
-                            (
-                                product_id,
-                                component_id,
-                                attribute,
-                                rule_type,
-                                formula,
-                                fixed_value
-                            )
-                        VALUES
-                            (%s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            product_options[selected_product],
-                            selected_component_id,
-                            selected_attribute,
-                            rule_type,
-                            formula,
-                            fixed_value
-                        )
+        if st.button("Save Product Definition"):
+            if attribute_type == "Formula" and not formula:
+                st.warning("Please enter formula expression.")
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO product_component_rules
+                    (
+                        product_id,
+                        component_id,
+                        attribute_name,
+                        attribute_type,
+                        fixed_value,
+                        formula
                     )
-                    conn.commit()
-                    st.success("Product rule saved successfully.")
-                    st.rerun()
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        product_options[selected_product_label],
+                        component_options[selected_component_label],
+                        attribute,
+                        attribute_type,
+                        fixed_value,
+                        formula
+                    )
+                )
+
+                conn.commit()
+                st.success("Product definition saved successfully.")
+                st.rerun()
 
     # =====================================================
     # 4. DISPLAY EXISTING RULES
     # =====================================================
-    with st.expander("4. Existing Rules", expanded=True):
-        st.subheader("Existing Rules for Product")
+    with st.expander("4. Existing Product Rules", expanded=True):
 
-        products_df = fetch_data(
+        st.subheader("Existing Rules")
+
+        products_df = fetch_df(
             cur,
             """
-            SELECT *
+            SELECT id, product_name, category
             FROM products
             ORDER BY product_name
             """
@@ -300,35 +284,36 @@ def show_product_master(conn, cur):
             st.info("No products found.")
         else:
             product_options = {
-                row["product_name"]: row["id"]
+                f"{row['product_name']} - {row['category']}": row["id"]
                 for _, row in products_df.iterrows()
             }
 
-            selected_product_rules = st.selectbox(
+            selected_product_label = st.selectbox(
                 "Select Product to View Rules",
-                list(product_options.keys())
+                list(product_options.keys()),
+                key="view_rules_product"
             )
 
-            rules_df = fetch_data(
+            rules_df = fetch_df(
                 cur,
                 """
                 SELECT
-                    pcr.id,
                     p.product_name,
-                    cl.component_name,
-                    pcr.attribute,
-                    pcr.rule_type,
-                    pcr.formula,
-                    pcr.fixed_value
-                FROM product_component_rules pcr
-                LEFT JOIN products p
-                    ON p.id = pcr.product_id
-                LEFT JOIN component_library cl
-                    ON cl.id = pcr.component_id
-                WHERE pcr.product_id = %s
-                ORDER BY pcr.id DESC
+                    p.category,
+                    c.component_name,
+                    r.attribute_name,
+                    r.attribute_type,
+                    r.fixed_value,
+                    r.formula
+                FROM product_component_rules r
+                JOIN products p
+                    ON p.id = r.product_id
+                JOIN component_library c
+                    ON c.id = r.component_id
+                WHERE r.product_id = %s
+                ORDER BY c.component_name, r.attribute_name
                 """,
-                (product_options[selected_product_rules],)
+                (product_options[selected_product_label],)
             )
 
             st.dataframe(rules_df, use_container_width=True)
