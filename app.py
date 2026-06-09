@@ -279,6 +279,7 @@ with st.sidebar:
             "Component Calculator",
             "Tracking",
             "Upload Data",
+            "Product Master",
             "Delete Data"
         ]
 
@@ -331,29 +332,20 @@ if (
 try:
 
     if page == "Component Calculator":
-
         from component_calculator import show_component_calculator
-
         show_component_calculator(conn, cur)
-
     elif page == "Tracking":
-
         from tracking import show_tracking
-
         show_tracking(conn, cur)
-
     elif page == "Upload Data":
-
         from upload import show_upload
-
         show_upload(conn, cur)
-
     elif page == "Delete Data":
-
         from delete import show_delete
-
         show_delete(conn, cur)
-
+    elif page == "Product Master":
+        from product_master import show_product_master
+        show_product_master(conn, cur)
 
 except Exception as e:
 
