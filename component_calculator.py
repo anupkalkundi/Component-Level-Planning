@@ -47,46 +47,73 @@ def clean_number(value):
 
 def clean_int(value):
     number = clean_number(value)
+
     if number is None:
         return 0
+
     return int(float(number))
 
 
 def decimal_value(value):
     number = clean_number(value)
+
     if number is None:
         return Decimal("0")
+
     return Decimal(str(round(number, 2)))
 
 
 def display_number(value):
     number = clean_number(value)
+
     if number is None:
         return ""
+
     if float(number).is_integer():
         return int(number)
+
     return round(number, 2)
 
 
 def is_flush_component(component):
-    text = slug(component)
-    return "flush_shutter" in text or "flush_door" in text
+    component_key = slug(component)
+    return (
+        "flush_shutter" in component_key
+        or "flush_door" in component_key
+        or component_key == "flush"
+    )
+
+
+def component_sort_key(component):
+    if is_flush_component(component):
+        return 9999
+
+    order = {
+        "frame_vertical": 1,
+        "frame_horizontal": 2,
+        "architrave_vertical": 3,
+        "architrave_horizontal": 4,
+    }
+
+    return order.get(slug(component), 100)
 
 
 def wood_shade_for_component(component):
     if is_flush_component(component):
         return "38 mm BB"
+
     return "SOLIDWOOD - TEAK"
 
 
 def product_uses_lh_rh(product_cat, product_code, rules):
-    text = slug(f"{product_cat} {product_code}")
+    product_text = slug(f"{product_cat} {product_code}")
 
-    if "door" in text or "shutter" in text:
+    if "door" in product_text or "shutter" in product_text:
         return True
 
     for rule in rules:
         formula_vars = extract_formula_variables(rule.get("formula_used"))
+
         if "lh_quantity" in formula_vars or "rh_quantity" in formula_vars:
             return True
 
@@ -178,6 +205,7 @@ def required_formula_inputs(rules):
             inputs.update(extract_formula_variables(rule["formula_used"]))
 
     inputs -= calculated_variable_keys(rules)
+
     inputs.discard("lh_quantity")
     inputs.discard("rh_quantity")
     inputs.discard("quantity")
@@ -407,6 +435,88 @@ def build_component_summary(rules, calculated_rows, product_qty):
     return summary_rows
 
 
+def aggregate_preview_rows(raw_rows):
+    if not raw_rows:
+        return pd.DataFrame()
+
+    raw_df = pd.DataFrame(raw_rows)
+
+    grouped_rows = []
+
+    group_cols = [
+        "Product",
+        "Component",
+        "Length",
+        "Width",
+        "Thickness",
+    ]
+
+    for _, group_df in raw_df.groupby(group_cols, dropna=False, sort=False):
+        first_row = group_df.iloc[0].to_dict()
+        component = first_row["Component"]
+        total_qty = int(group_df["Qty"].sum())
+
+        cft = calculate_cft(
+            first_row["Length"],
+            first_row["Width"],
+            first_row["Thickness"],
+            total_qty,
+            component,
+        )
+
+        grouped_rows.append({
+            "Product": first_row["Product"],
+            "Component": component,
+            "Length": first_row["Length"],
+            "Width": first_row["Width"],
+            "Thickness": first_row["Thickness"],
+            "Qty": total_qty,
+            "CFT": cft,
+            "LH & RH Details": "",
+        })
+
+    grouped_rows = sorted(
+        grouped_rows,
+        key=lambda row: component_sort_key(row["Component"])
+    )
+
+    lh_rh_summary = []
+
+    unique_houses = raw_df[
+        ["House Number", "LH Quantity", "RH Quantity"]
+    ].drop_duplicates()
+
+    for _, row in unique_houses.iterrows():
+        house_number = row["House Number"]
+        lh_qty = clean_int(row["LH Quantity"])
+        rh_qty = clean_int(row["RH Quantity"])
+
+        parts = []
+
+        if lh_qty > 0:
+            parts.append(f"{lh_qty}L")
+
+        if rh_qty > 0:
+            parts.append(f"{rh_qty}R")
+
+        if parts:
+            lh_rh_summary.append(f"{house_number}: {', '.join(parts)}")
+
+    if grouped_rows and lh_rh_summary:
+        chunk_size = max(1, int((len(lh_rh_summary) + len(grouped_rows) - 1) / len(grouped_rows)))
+
+        chunks = []
+
+        for idx in range(0, len(lh_rh_summary), chunk_size):
+            chunks.append(" | ".join(lh_rh_summary[idx:idx + chunk_size]))
+
+        for idx, chunk in enumerate(chunks):
+            if idx < len(grouped_rows):
+                grouped_rows[idx]["LH & RH Details"] = chunk
+
+    return pd.DataFrame(grouped_rows)
+
+
 def apply_cell_style(cell, border, font=None, fill=None, alignment=None):
     cell.border = border
 
@@ -428,6 +538,8 @@ def build_wood_issue_excel(
     total_qty,
     total_lh_qty,
     total_rh_qty,
+    opening_length,
+    opening_width,
     preview_df,
 ):
     output = BytesIO()
@@ -439,7 +551,7 @@ def build_wood_issue_excel(
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
     green_fill = PatternFill("solid", fgColor="C6EFCE")
-    light_green_fill = PatternFill("solid", fgColor="DDEDE6")
+    product_fill = PatternFill("solid", fgColor="DDE7E0")
     white_fill = PatternFill("solid", fgColor="FFFFFF")
 
     title_font = Font(name="Calibri", size=14, bold=True)
@@ -457,7 +569,6 @@ def build_wood_issue_excel(
 
     ws.merge_cells("A2:A5")
     ws["A2"] = "1"
-    apply_cell_style(ws["A2"], border, header_font, white_fill, center)
 
     ws.merge_cells("B2:D2")
     ws["B2"] = "PROJECT NAME"
@@ -465,38 +576,39 @@ def build_wood_issue_excel(
     ws["E2"] = project_name
     ws.merge_cells("H2:K2")
     ws["H2"] = f"{project_name} {unit_type} - {product_code} Batch"
+
     ws.merge_cells("L2:M4")
     ws["L2"] = total_qty
 
     ws.merge_cells("B3:D3")
     ws["B3"] = "PROJECT CODE"
     ws.merge_cells("E3:G3")
-    ws["E3"] = unit_type
+    ws["E3"] = ""
 
     ws.merge_cells("B4:D4")
     ws["B4"] = "PREPARED DATE"
     ws.merge_cells("E4:G4")
-    ws["E4"] = date.today().strftime("%d-%m-%Y")
+    ws["E4"] = ""
+    ws.merge_cells("H4:K4")
+    ws["H4"] = date.today().strftime("%d-%m-%Y")
 
     ws.merge_cells("B5:D5")
     ws["B5"] = "ORDER qty"
     ws.merge_cells("E5:G5")
-    ws["E5"] = total_qty
-    ws.merge_cells("H5:H5")
+    ws["E5"] = ""
     ws["H5"] = total_qty
     ws.merge_cells("I5:K5")
-    if total_lh_qty or total_rh_qty:
-        ws["I5"] = f"{total_lh_qty} LH / {total_rh_qty} RH"
-    else:
-        ws["I5"] = total_qty
+    ws["I5"] = f"{total_lh_qty} LH / {total_rh_qty} RH" if total_lh_qty or total_rh_qty else total_qty
     ws.merge_cells("L5:M5")
-    ws["L5"] = f"prepared by {prepared_by}"
+    ws["L5"] = "Prepared By"
 
     ws.merge_cells("A6:G6")
     ws.merge_cells("H6:I6")
     ws["H6"] = "OPENING SIZE"
-    ws.merge_cells("J6:K6")
+    ws["J6"] = display_number(opening_length)
+    ws["K6"] = display_number(opening_width)
     ws.merge_cells("L6:M6")
+    ws["L6"] = prepared_by
 
     ws["A7"] = "SL.\nNO."
     ws.merge_cells("B7:C7")
@@ -510,7 +622,7 @@ def build_wood_issue_excel(
     ws["J7"] = "THICK"
     ws["K7"] = "QTY"
     ws["L7"] = "CFT"
-    ws["M7"] = "REMARKS"
+    ws["M7"] = "LH & RH DETAILS"
 
     for row in range(1, 8):
         for col in range(1, 14):
@@ -518,7 +630,9 @@ def build_wood_issue_excel(
             apply_cell_style(cell, border, header_font, white_fill, wrap_center)
 
     apply_cell_style(ws["A1"], border, title_font, green_fill, center)
-    apply_cell_style(ws["D7"], border, product_font, white_fill, center)
+    apply_cell_style(ws["A2"], border, header_font, white_fill, center)
+    apply_cell_style(ws["L2"], border, Font(name="Calibri", size=16, bold=True), white_fill, center)
+    apply_cell_style(ws["D7"], border, product_font, product_fill, center)
 
     start_row = 8
     total_cft = Decimal("0")
@@ -529,16 +643,29 @@ def build_wood_issue_excel(
         cft = Decimal(str(row["CFT"] or 0))
 
         ws.cell(excel_row, 1, idx + 1)
-        ws.merge_cells(start_row=excel_row, start_column=2, end_row=excel_row, end_column=3)
+
+        ws.merge_cells(
+            start_row=excel_row,
+            start_column=2,
+            end_row=excel_row,
+            end_column=3
+        )
         ws.cell(excel_row, 2, component)
-        ws.merge_cells(start_row=excel_row, start_column=5, end_row=excel_row, end_column=7)
+
+        ws.merge_cells(
+            start_row=excel_row,
+            start_column=5,
+            end_row=excel_row,
+            end_column=7
+        )
         ws.cell(excel_row, 5, wood_shade_for_component(component))
+
         ws.cell(excel_row, 8, row["Length"])
         ws.cell(excel_row, 9, row["Width"])
         ws.cell(excel_row, 10, row["Thickness"])
         ws.cell(excel_row, 11, row["Qty"])
         ws.cell(excel_row, 12, float(cft) if cft != 0 else 0)
-        ws.cell(excel_row, 13, "")
+        ws.cell(excel_row, 13, row.get("LH & RH Details", ""))
 
         if not is_flush_component(component):
             total_cft += cft
@@ -550,39 +677,40 @@ def build_wood_issue_excel(
 
     total_row = start_row + len(preview_df)
 
-    ws.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=11)
+    ws.merge_cells(
+        start_row=total_row,
+        start_column=1,
+        end_row=total_row,
+        end_column=11
+    )
     ws.cell(total_row, 12, float(round(total_cft, 2)))
-    ws.merge_cells(start_row=total_row, start_column=13, end_row=total_row, end_column=13)
+    ws.cell(total_row, 13, "")
 
     for col in range(1, 14):
         apply_cell_style(ws.cell(total_row, col), border, header_font, white_fill, center)
 
-    footer_row = total_row + 1
-
-    for col in range(1, 14):
-        apply_cell_style(ws.cell(footer_row, col), border, normal_font, light_green_fill, center)
-
     widths = {
         "A": 8,
-        "B": 18,
-        "C": 18,
+        "B": 20,
+        "C": 20,
         "D": 16,
-        "E": 18,
-        "F": 18,
-        "G": 18,
+        "E": 20,
+        "F": 20,
+        "G": 20,
         "H": 12,
         "I": 12,
         "J": 12,
         "K": 10,
         "L": 12,
-        "M": 20,
+        "M": 38,
     }
 
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
 
     ws.row_dimensions[1].height = 30
-    for row in range(2, footer_row + 1):
+
+    for row in range(2, total_row + 1):
         ws.row_dimensions[row].height = 28
 
     ws.freeze_panes = "A8"
@@ -750,6 +878,7 @@ def show_component_calculator(conn, cur):
                 }
 
             total_product_quantity = sum(item["quantity"] for item in house_quantities.values())
+
             st.info(f"Total Quantity: {total_product_quantity}")
 
     st.markdown("---")
@@ -804,7 +933,7 @@ def show_component_calculator(conn, cur):
             st.warning("Select at least one house.")
             return
 
-        preview_rows = []
+        raw_preview_rows = []
         tracking_rows = []
         generated_insert_rows = []
 
@@ -836,7 +965,7 @@ def show_component_calculator(conn, cur):
                 )
 
                 for row in summary_rows:
-                    preview_rows.append({
+                    raw_preview_rows.append({
                         "House Number": house_number,
                         "Product": product_code,
                         "Component": row["Component"],
@@ -874,13 +1003,18 @@ def show_component_calculator(conn, cur):
                         "Pending",
                     ))
 
-            st.session_state["component_preview_rows"] = preview_rows
+            display_df = aggregate_preview_rows(raw_preview_rows)
+
+            st.session_state["component_raw_preview_rows"] = raw_preview_rows
+            st.session_state["component_preview_rows"] = display_df.to_dict("records")
             st.session_state["component_generated_rows"] = generated_insert_rows
             st.session_state["component_tracking_rows"] = tracking_rows
             st.session_state["component_total_lh_quantity"] = total_lh_quantity
             st.session_state["component_total_rh_quantity"] = total_rh_quantity
             st.session_state["component_total_quantity"] = total_product_quantity
             st.session_state["component_prepared_by"] = prepared_by
+            st.session_state["component_opening_length"] = user_inputs.get("opening_length", "")
+            st.session_state["component_opening_width"] = user_inputs.get("opening_width", "")
 
         except FormulaError as e:
             st.error(f"Calculation error: {e}")
@@ -893,16 +1027,18 @@ def show_component_calculator(conn, cur):
     if "component_preview_rows" in st.session_state:
         st.subheader("Generated Components")
 
-        preview_df = pd.DataFrame(st.session_state["component_preview_rows"])
+        display_df = pd.DataFrame(st.session_state["component_preview_rows"])
 
         total_lh_quantity = st.session_state.get("component_total_lh_quantity", 0)
         total_rh_quantity = st.session_state.get("component_total_rh_quantity", 0)
         total_product_quantity = st.session_state.get("component_total_quantity", 0)
         prepared_by = st.session_state.get("component_prepared_by", prepared_by)
+        opening_length = st.session_state.get("component_opening_length", "")
+        opening_width = st.session_state.get("component_opening_width", "")
 
         total_cft = sum(
             clean_number(value) or 0
-            for value in preview_df["CFT"].tolist()
+            for value in display_df["CFT"].tolist()
         )
 
         st.info(
@@ -912,10 +1048,24 @@ def show_component_calculator(conn, cur):
             f"Total CFT: {round(total_cft, 2)}"
         )
 
-        display_df = preview_df.copy()
+        total_row = {
+            "Product": "",
+            "Component": "CFT Total",
+            "Length": "",
+            "Width": "",
+            "Thickness": "",
+            "Qty": "",
+            "CFT": Decimal(str(round(total_cft, 2))),
+            "LH & RH Details": "",
+        }
+
+        display_with_total_df = pd.concat(
+            [display_df, pd.DataFrame([total_row])],
+            ignore_index=True
+        )
 
         st.dataframe(
-            display_df,
+            display_with_total_df,
             use_container_width=True,
             hide_index=True
         )
@@ -928,6 +1078,8 @@ def show_component_calculator(conn, cur):
             total_qty=total_product_quantity,
             total_lh_qty=total_lh_quantity,
             total_rh_qty=total_rh_quantity,
+            opening_length=opening_length,
+            opening_width=opening_width,
             preview_df=display_df,
         )
 
