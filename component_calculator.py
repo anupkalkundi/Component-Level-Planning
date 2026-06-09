@@ -108,16 +108,11 @@ def wood_shade_for_component(component):
 def product_uses_lh_rh(product_cat, product_code, rules):
     product_text = slug(f"{product_cat} {product_code}")
 
-    if "door" in product_text or "shutter" in product_text:
-        return True
-
-    for rule in rules:
-        formula_vars = extract_formula_variables(rule.get("formula_used"))
-
-        if "lh_quantity" in formula_vars or "rh_quantity" in formula_vars:
-            return True
-
-    return False
+    return (
+        "door" in product_text
+        or "door_window" in product_text
+        or "doowindow" in product_text
+    )
 
 
 def get_distinct_values(cur, table_name, column_name, where_sql="", params=None):
@@ -1012,6 +1007,7 @@ def show_component_calculator(conn, cur):
             st.session_state["component_total_lh_quantity"] = total_lh_quantity
             st.session_state["component_total_rh_quantity"] = total_rh_quantity
             st.session_state["component_total_quantity"] = total_product_quantity
+            st.session_state["component_uses_lh_rh"] = uses_lh_rh
             st.session_state["component_prepared_by"] = prepared_by
             st.session_state["component_opening_length"] = user_inputs.get("opening_length", "")
             st.session_state["component_opening_width"] = user_inputs.get("opening_width", "")
@@ -1032,6 +1028,7 @@ def show_component_calculator(conn, cur):
         total_lh_quantity = st.session_state.get("component_total_lh_quantity", 0)
         total_rh_quantity = st.session_state.get("component_total_rh_quantity", 0)
         total_product_quantity = st.session_state.get("component_total_quantity", 0)
+        uses_lh_rh = st.session_state.get("component_uses_lh_rh", False)
         prepared_by = st.session_state.get("component_prepared_by", prepared_by)
         opening_length = st.session_state.get("component_opening_length", "")
         opening_width = st.session_state.get("component_opening_width", "")
@@ -1041,12 +1038,18 @@ def show_component_calculator(conn, cur):
             for value in display_df["CFT"].tolist()
         )
 
-        st.info(
-            f"Total LH Quantity: {total_lh_quantity} | "
-            f"Total RH Quantity: {total_rh_quantity} | "
-            f"Total Quantity: {total_product_quantity} | "
-            f"Total CFT: {round(total_cft, 2)}"
-        )
+        if uses_lh_rh:
+            st.info(
+                f"Total LH Quantity: {total_lh_quantity} | "
+                f"Total RH Quantity: {total_rh_quantity} | "
+                f"Total Quantity: {total_product_quantity} | "
+                f"Total CFT: {round(total_cft, 2)}"
+            )
+        else:
+            st.info(
+                f"Total Quantity: {total_product_quantity} | "
+                f"Total CFT: {round(total_cft, 2)}"
+            )
 
         total_row = {
             "Product": "",
@@ -1076,8 +1079,8 @@ def show_component_calculator(conn, cur):
             product_code=product_code,
             prepared_by=prepared_by,
             total_qty=total_product_quantity,
-            total_lh_qty=total_lh_quantity,
-            total_rh_qty=total_rh_quantity,
+            total_lh_qty=total_lh_quantity if uses_lh_rh else 0,
+            total_rh_qty=total_rh_quantity if uses_lh_rh else 0,
             opening_length=opening_length,
             opening_width=opening_width,
             preview_df=display_df,
