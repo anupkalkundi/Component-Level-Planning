@@ -1,9 +1,12 @@
 import re
 from decimal import Decimal
 from io import BytesIO
+from datetime import date
 
 import pandas as pd
 import streamlit as st
+from openpyxl import Workbook
+from openpyxl.styles import Font, Border, Side, Alignment, PatternFill
 from psycopg2.extras import execute_values
 
 
@@ -44,41 +47,36 @@ def clean_number(value):
 
 def clean_int(value):
     number = clean_number(value)
-
     if number is None:
         return 0
-
     return int(float(number))
 
 
 def decimal_value(value):
     number = clean_number(value)
-
     if number is None:
         return Decimal("0")
-
     return Decimal(str(round(number, 2)))
 
 
-def clean_display_number(value):
+def display_number(value):
     number = clean_number(value)
-
     if number is None:
         return ""
-
     if float(number).is_integer():
         return int(number)
-
     return round(number, 2)
 
 
 def is_flush_component(component):
-    component_key = slug(component)
-    return component_key in {
-        "flush_door",
-        "flush_shutter",
-        "flush_door_shutter",
-    } or "flush_door" in component_key or "flush_shutter" in component_key
+    text = slug(component)
+    return "flush_shutter" in text or "flush_door" in text
+
+
+def wood_shade_for_component(component):
+    if is_flush_component(component):
+        return "38 mm BB"
+    return "SOLIDWOOD - TEAK"
 
 
 def product_uses_lh_rh(product_cat, product_code, rules):
@@ -87,25 +85,12 @@ def product_uses_lh_rh(product_cat, product_code, rules):
     if "door" in text or "shutter" in text:
         return True
 
-    formula_vars = set()
-
     for rule in rules:
-        if str(rule.get("rule_type") or "").lower() == "formula":
-            formula_vars.update(extract_formula_variables(rule.get("formula_used")))
+        formula_vars = extract_formula_variables(rule.get("formula_used"))
+        if "lh_quantity" in formula_vars or "rh_quantity" in formula_vars:
+            return True
 
-    return "lh_quantity" in formula_vars or "rh_quantity" in formula_vars
-
-
-def get_table_columns(cur, table_name):
-    cur.execute(
-        """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_name = %s
-        """,
-        (table_name,)
-    )
-    return {row[0] for row in cur.fetchall()}
+    return False
 
 
 def get_distinct_values(cur, table_name, column_name, where_sql="", params=None):
@@ -280,7 +265,7 @@ def get_component_quantity(component_rules):
 
 def calculate_cft(length, width, thickness, qty, component=None):
     if is_flush_component(component):
-        return Decimal("0.00")
+        return Decimal("0")
 
     length_num = clean_number(length) or 0
     width_num = clean_number(width) or 0
@@ -288,7 +273,7 @@ def calculate_cft(length, width, thickness, qty, component=None):
     quantity_num = clean_number(qty) or 0
 
     if length_num <= 0 or width_num <= 0 or thickness_num <= 0 or quantity_num <= 0:
-        return Decimal("0.00")
+        return Decimal("0")
 
     cft = length_num * width_num * thickness_num / 1000000000 * 35.315 * quantity_num
     return Decimal(str(round(cft, 2)))
@@ -412,9 +397,9 @@ def build_component_summary(rules, calculated_rows, product_qty):
 
         summary_rows.append({
             "Component": component,
-            "Length": clean_display_number(length),
-            "Width": clean_display_number(width),
-            "Thickness": clean_display_number(thickness),
+            "Length": display_number(length),
+            "Width": display_number(width),
+            "Thickness": display_number(thickness),
             "Qty": total_qty,
             "CFT": cft,
         })
@@ -422,57 +407,189 @@ def build_component_summary(rules, calculated_rows, product_qty):
     return summary_rows
 
 
-def build_components_excel(
+def apply_cell_style(cell, border, font=None, fill=None, alignment=None):
+    cell.border = border
+
+    if font:
+        cell.font = font
+
+    if fill:
+        cell.fill = fill
+
+    if alignment:
+        cell.alignment = alignment
+
+
+def build_wood_issue_excel(
     project_name,
     unit_type,
     product_code,
-    total_lh_quantity,
-    total_rh_quantity,
-    total_quantity,
     prepared_by,
+    total_qty,
+    total_lh_qty,
+    total_rh_qty,
     preview_df,
 ):
     output = BytesIO()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Wood Issue Report"
 
-    header_df = pd.DataFrame([
-        ["Project", project_name],
-        ["Unit Type", unit_type],
-        ["Product", product_code],
-        ["Total LH Quantity", total_lh_quantity],
-        ["Total RH Quantity", total_rh_quantity],
-        ["Total Quantity", total_quantity],
-        ["Prepared By", prepared_by],
-    ])
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        header_df.to_excel(
-            writer,
-            sheet_name="Generated Components",
-            index=False,
-            header=False,
-            startrow=0,
-        )
+    green_fill = PatternFill("solid", fgColor="C6EFCE")
+    light_green_fill = PatternFill("solid", fgColor="DDEDE6")
+    white_fill = PatternFill("solid", fgColor="FFFFFF")
 
-        preview_df.to_excel(
-            writer,
-            sheet_name="Generated Components",
-            index=False,
-            startrow=9,
-        )
+    title_font = Font(name="Calibri", size=14, bold=True)
+    header_font = Font(name="Calibri", size=11, bold=True)
+    normal_font = Font(name="Calibri", size=11)
+    item_font = Font(name="Times New Roman", size=16)
+    product_font = Font(name="Times New Roman", size=20, bold=True)
 
-        ws = writer.book["Generated Components"]
+    center = Alignment(horizontal="center", vertical="center")
+    wrap_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-        for col in ws.columns:
-            max_length = 0
-            column_letter = col[0].column_letter
+    ws.merge_cells("A1:M1")
+    ws["A1"] = "WOOD ISSUE REPORT"
+    apply_cell_style(ws["A1"], border, title_font, green_fill, center)
 
-            for cell in col:
-                value = "" if cell.value is None else str(cell.value)
-                max_length = max(max_length, len(value))
+    ws.merge_cells("A2:A5")
+    ws["A2"] = "1"
+    apply_cell_style(ws["A2"], border, header_font, white_fill, center)
 
-            ws.column_dimensions[column_letter].width = min(max_length + 3, 45)
+    ws.merge_cells("B2:D2")
+    ws["B2"] = "PROJECT NAME"
+    ws.merge_cells("E2:G2")
+    ws["E2"] = project_name
+    ws.merge_cells("H2:K2")
+    ws["H2"] = f"{project_name} {unit_type} - {product_code} Batch"
+    ws.merge_cells("L2:M4")
+    ws["L2"] = total_qty
 
+    ws.merge_cells("B3:D3")
+    ws["B3"] = "PROJECT CODE"
+    ws.merge_cells("E3:G3")
+    ws["E3"] = unit_type
+
+    ws.merge_cells("B4:D4")
+    ws["B4"] = "PREPARED DATE"
+    ws.merge_cells("E4:G4")
+    ws["E4"] = date.today().strftime("%d-%m-%Y")
+
+    ws.merge_cells("B5:D5")
+    ws["B5"] = "ORDER qty"
+    ws.merge_cells("E5:G5")
+    ws["E5"] = total_qty
+    ws.merge_cells("H5:H5")
+    ws["H5"] = total_qty
+    ws.merge_cells("I5:K5")
+    if total_lh_qty or total_rh_qty:
+        ws["I5"] = f"{total_lh_qty} LH / {total_rh_qty} RH"
+    else:
+        ws["I5"] = total_qty
+    ws.merge_cells("L5:M5")
+    ws["L5"] = f"prepared by {prepared_by}"
+
+    ws.merge_cells("A6:G6")
+    ws.merge_cells("H6:I6")
+    ws["H6"] = "OPENING SIZE"
+    ws.merge_cells("J6:K6")
+    ws.merge_cells("L6:M6")
+
+    ws["A7"] = "SL.\nNO."
+    ws.merge_cells("B7:C7")
+    ws["B7"] = "Item Code"
+    ws.merge_cells("D7:D12")
+    ws["D7"] = product_code
+    ws.merge_cells("E7:G7")
+    ws["E7"] = "WOOD SHADE"
+    ws["H7"] = "LENGTH"
+    ws["I7"] = "WIDTH"
+    ws["J7"] = "THICK"
+    ws["K7"] = "QTY"
+    ws["L7"] = "CFT"
+    ws["M7"] = "REMARKS"
+
+    for row in range(1, 8):
+        for col in range(1, 14):
+            cell = ws.cell(row=row, column=col)
+            apply_cell_style(cell, border, header_font, white_fill, wrap_center)
+
+    apply_cell_style(ws["A1"], border, title_font, green_fill, center)
+    apply_cell_style(ws["D7"], border, product_font, white_fill, center)
+
+    start_row = 8
+    total_cft = Decimal("0")
+
+    for idx, row in preview_df.iterrows():
+        excel_row = start_row + idx
+        component = row["Component"]
+        cft = Decimal(str(row["CFT"] or 0))
+
+        ws.cell(excel_row, 1, idx + 1)
+        ws.merge_cells(start_row=excel_row, start_column=2, end_row=excel_row, end_column=3)
+        ws.cell(excel_row, 2, component)
+        ws.merge_cells(start_row=excel_row, start_column=5, end_row=excel_row, end_column=7)
+        ws.cell(excel_row, 5, wood_shade_for_component(component))
+        ws.cell(excel_row, 8, row["Length"])
+        ws.cell(excel_row, 9, row["Width"])
+        ws.cell(excel_row, 10, row["Thickness"])
+        ws.cell(excel_row, 11, row["Qty"])
+        ws.cell(excel_row, 12, float(cft) if cft != 0 else 0)
+        ws.cell(excel_row, 13, "")
+
+        if not is_flush_component(component):
+            total_cft += cft
+
+        for col in range(1, 14):
+            cell = ws.cell(excel_row, col)
+            font = item_font if col in [2, 5] else normal_font
+            apply_cell_style(cell, border, font, white_fill, center)
+
+    total_row = start_row + len(preview_df)
+
+    ws.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=11)
+    ws.cell(total_row, 12, float(round(total_cft, 2)))
+    ws.merge_cells(start_row=total_row, start_column=13, end_row=total_row, end_column=13)
+
+    for col in range(1, 14):
+        apply_cell_style(ws.cell(total_row, col), border, header_font, white_fill, center)
+
+    footer_row = total_row + 1
+
+    for col in range(1, 14):
+        apply_cell_style(ws.cell(footer_row, col), border, normal_font, light_green_fill, center)
+
+    widths = {
+        "A": 8,
+        "B": 18,
+        "C": 18,
+        "D": 16,
+        "E": 18,
+        "F": 18,
+        "G": 18,
+        "H": 12,
+        "I": 12,
+        "J": 12,
+        "K": 10,
+        "L": 12,
+        "M": 20,
+    }
+
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+
+    ws.row_dimensions[1].height = 30
+    for row in range(2, footer_row + 1):
+        ws.row_dimensions[row].height = 28
+
+    ws.freeze_panes = "A8"
+
+    wb.save(output)
     output.seek(0)
+
     return output
 
 
@@ -550,7 +667,6 @@ def show_component_calculator(conn, cur):
 
     product_cat = product_options[selected_product]["product_cat"]
     product_code = product_options[selected_product]["product_code"]
-
     state_key = f"{project_name}_{unit_type}_{product_cat}_{product_code}"
 
     rules = load_product_rules(cur, product_cat, product_code)
@@ -560,6 +676,81 @@ def show_component_calculator(conn, cur):
         return
 
     uses_lh_rh = product_uses_lh_rh(product_cat, product_code, rules)
+
+    house_quantities = {}
+    total_lh_quantity = 0
+    total_rh_quantity = 0
+    total_product_quantity = 0
+
+    if selected_houses:
+        st.markdown("---")
+
+        if uses_lh_rh:
+            st.subheader("House Wise LH / RH Quantity")
+
+            qty_df = pd.DataFrame({
+                "House Number": selected_houses,
+                "LH Quantity": [0 for _ in selected_houses],
+                "RH Quantity": [0 for _ in selected_houses],
+            })
+
+            edited_qty_df = st.data_editor(
+                qty_df,
+                use_container_width=True,
+                hide_index=True,
+                disabled=["House Number"],
+                key=f"lh_rh_qty_{state_key}",
+            )
+
+            for _, row in edited_qty_df.iterrows():
+                house_number = row["House Number"]
+                lh_qty = clean_int(row["LH Quantity"])
+                rh_qty = clean_int(row["RH Quantity"])
+
+                house_quantities[house_number] = {
+                    "lh_quantity": lh_qty,
+                    "rh_quantity": rh_qty,
+                    "quantity": lh_qty + rh_qty,
+                }
+
+            total_lh_quantity = sum(item["lh_quantity"] for item in house_quantities.values())
+            total_rh_quantity = sum(item["rh_quantity"] for item in house_quantities.values())
+            total_product_quantity = total_lh_quantity + total_rh_quantity
+
+            st.info(
+                f"Total LH Quantity: {total_lh_quantity} | "
+                f"Total RH Quantity: {total_rh_quantity} | "
+                f"Total Quantity: {total_product_quantity}"
+            )
+
+        else:
+            st.subheader("House Wise Quantity")
+
+            qty_df = pd.DataFrame({
+                "House Number": selected_houses,
+                "Quantity": [1 for _ in selected_houses],
+            })
+
+            edited_qty_df = st.data_editor(
+                qty_df,
+                use_container_width=True,
+                hide_index=True,
+                disabled=["House Number"],
+                key=f"product_qty_{state_key}",
+            )
+
+            for _, row in edited_qty_df.iterrows():
+                house_number = row["House Number"]
+                qty = clean_int(row["Quantity"])
+
+                house_quantities[house_number] = {
+                    "lh_quantity": 0,
+                    "rh_quantity": 0,
+                    "quantity": qty,
+                }
+
+            total_product_quantity = sum(item["quantity"] for item in house_quantities.values())
+            st.info(f"Total Quantity: {total_product_quantity}")
 
     st.markdown("---")
     st.subheader("Required Inputs")
@@ -600,80 +791,13 @@ def show_component_calculator(conn, cur):
     if not formula_inputs and not manual_inputs:
         st.info("No user input required. Product uses only fixed values.")
 
+    prepared_by = st.selectbox(
+        "Prepared by",
+        ["Anup", "Mani"],
+        key=f"prepared_by_{state_key}"
+    )
+
     st.markdown("---")
-
-    house_quantities = {}
-    total_lh_quantity = 0
-    total_rh_quantity = 0
-    total_quantity = 0
-
-    if selected_houses:
-        st.subheader("Product Quantity")
-
-        if uses_lh_rh:
-            quantity_df = pd.DataFrame({
-                "House Number": selected_houses,
-                "LH Quantity": [0 for _ in selected_houses],
-                "RH Quantity": [0 for _ in selected_houses],
-            })
-
-            edited_quantity_df = st.data_editor(
-                quantity_df,
-                use_container_width=True,
-                hide_index=True,
-                disabled=["House Number"],
-                key=f"lh_rh_quantity_{state_key}",
-            )
-
-            for _, row in edited_quantity_df.iterrows():
-                house_number = row["House Number"]
-                lh_qty = clean_int(row["LH Quantity"])
-                rh_qty = clean_int(row["RH Quantity"])
-                qty = lh_qty + rh_qty
-
-                house_quantities[house_number] = {
-                    "lh_quantity": lh_qty,
-                    "rh_quantity": rh_qty,
-                    "quantity": qty,
-                }
-
-            total_lh_quantity = sum(item["lh_quantity"] for item in house_quantities.values())
-            total_rh_quantity = sum(item["rh_quantity"] for item in house_quantities.values())
-            total_quantity = total_lh_quantity + total_rh_quantity
-
-            st.info(
-                f"Total LH Quantity: {total_lh_quantity} | "
-                f"Total RH Quantity: {total_rh_quantity} | "
-                f"Total Quantity: {total_quantity}"
-            )
-
-        else:
-            quantity_df = pd.DataFrame({
-                "House Number": selected_houses,
-                "Quantity": [1 for _ in selected_houses],
-            })
-
-            edited_quantity_df = st.data_editor(
-                quantity_df,
-                use_container_width=True,
-                hide_index=True,
-                disabled=["House Number"],
-                key=f"product_quantity_{state_key}",
-            )
-
-            for _, row in edited_quantity_df.iterrows():
-                house_number = row["House Number"]
-                qty = clean_int(row["Quantity"])
-
-                house_quantities[house_number] = {
-                    "lh_quantity": 0,
-                    "rh_quantity": 0,
-                    "quantity": qty,
-                }
-
-            total_quantity = sum(item["quantity"] for item in house_quantities.values())
-
-            st.info(f"Total Quantity: {total_quantity}")
 
     if st.button("Generate Components", type="primary"):
         if not selected_houses:
@@ -686,10 +810,11 @@ def show_component_calculator(conn, cur):
 
         try:
             for house_number in selected_houses:
-                house_qty = house_quantities.get(
-                    house_number,
-                    {"lh_quantity": 0, "rh_quantity": 0, "quantity": 1}
-                )
+                house_qty = house_quantities.get(house_number, {
+                    "lh_quantity": 0,
+                    "rh_quantity": 0,
+                    "quantity": 1,
+                })
 
                 product_qty = int(house_qty["quantity"])
 
@@ -722,10 +847,6 @@ def show_component_calculator(conn, cur):
                         "CFT": row["CFT"],
                         "LH Quantity": house_qty["lh_quantity"],
                         "RH Quantity": house_qty["rh_quantity"],
-                        "LH & RH Details": (
-                            f"{house_qty['lh_quantity']}L, {house_qty['rh_quantity']}R"
-                            if uses_lh_rh else ""
-                        ),
                     })
 
                     generated_insert_rows.append((
@@ -758,8 +879,8 @@ def show_component_calculator(conn, cur):
             st.session_state["component_tracking_rows"] = tracking_rows
             st.session_state["component_total_lh_quantity"] = total_lh_quantity
             st.session_state["component_total_rh_quantity"] = total_rh_quantity
-            st.session_state["component_total_quantity"] = total_quantity
-            st.session_state["component_uses_lh_rh"] = uses_lh_rh
+            st.session_state["component_total_quantity"] = total_product_quantity
+            st.session_state["component_prepared_by"] = prepared_by
 
         except FormulaError as e:
             st.error(f"Calculation error: {e}")
@@ -776,41 +897,22 @@ def show_component_calculator(conn, cur):
 
         total_lh_quantity = st.session_state.get("component_total_lh_quantity", 0)
         total_rh_quantity = st.session_state.get("component_total_rh_quantity", 0)
-        total_quantity = st.session_state.get("component_total_quantity", 0)
-        uses_lh_rh = st.session_state.get("component_uses_lh_rh", False)
+        total_product_quantity = st.session_state.get("component_total_quantity", 0)
+        prepared_by = st.session_state.get("component_prepared_by", prepared_by)
 
         total_cft = sum(
             clean_number(value) or 0
             for value in preview_df["CFT"].tolist()
         )
 
-        if uses_lh_rh:
-            st.info(
-                f"Total LH Quantity: {total_lh_quantity} | "
-                f"Total RH Quantity: {total_rh_quantity} | "
-                f"Total Quantity: {total_quantity}"
-            )
-        else:
-            st.info(f"Total Quantity: {total_quantity}")
-
-        total_row = {
-            "House Number": "",
-            "Product": "",
-            "Component": "CFT Total",
-            "Length": "",
-            "Width": "",
-            "Thickness": "",
-            "Qty": "",
-            "CFT": Decimal(str(round(total_cft, 2))),
-            "LH Quantity": "",
-            "RH Quantity": "",
-            "LH & RH Details": "",
-        }
-
-        display_df = pd.concat(
-            [preview_df, pd.DataFrame([total_row])],
-            ignore_index=True
+        st.info(
+            f"Total LH Quantity: {total_lh_quantity} | "
+            f"Total RH Quantity: {total_rh_quantity} | "
+            f"Total Quantity: {total_product_quantity} | "
+            f"Total CFT: {round(total_cft, 2)}"
         )
+
+        display_df = preview_df.copy()
 
         st.dataframe(
             display_df,
@@ -818,25 +920,19 @@ def show_component_calculator(conn, cur):
             hide_index=True
         )
 
-        prepared_by = st.selectbox(
-            "Prepared by",
-            ["Anup", "Mani"],
-            key=f"prepared_by_{state_key}"
-        )
-
-        excel_file = build_components_excel(
-            project_name,
-            unit_type,
-            product_code,
-            total_lh_quantity,
-            total_rh_quantity,
-            total_quantity,
-            prepared_by,
-            display_df,
+        excel_file = build_wood_issue_excel(
+            project_name=project_name,
+            unit_type=unit_type,
+            product_code=product_code,
+            prepared_by=prepared_by,
+            total_qty=total_product_quantity,
+            total_lh_qty=total_lh_quantity,
+            total_rh_qty=total_rh_quantity,
+            preview_df=display_df,
         )
 
         st.download_button(
-            "Download Excel",
+            label="Download Excel",
             data=excel_file,
             file_name=f"{project_name}_{unit_type}_{product_code}_components.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
