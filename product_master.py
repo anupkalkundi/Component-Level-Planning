@@ -32,6 +32,7 @@ def normalize_rule_type(value):
 
     if value == "fixed":
         return "Fixed"
+
     if value == "formula":
         return "Formula"
 
@@ -567,4 +568,50 @@ def show_product_master(conn, cur):
                 (selected_cat, selected_code)
             )
 
-            st.dataframe(rules_df, use_container_width=True, hide_index=True)
+            if rules_df.empty:
+                st.info("No product definitions found.")
+            else:
+                display_rows = []
+
+                for component in sorted(rules_df["component"].unique()):
+                    component_rules = rules_df[
+                        rules_df["component"] == component
+                    ]
+
+                    row_data = {
+                        "Component": component,
+                        "Quantity": ""
+                    }
+
+                    for _, rule in component_rules.iterrows():
+                        attribute = rule["attribute"]
+                        rule_type = normalize_rule_type(rule["type"])
+
+                        if attribute == "Quantity":
+                            if rule["quantity"] is not None:
+                                row_data["Quantity"] = rule["quantity"]
+                            elif rule["fixed_value"] is not None:
+                                row_data["Quantity"] = rule["fixed_value"]
+                            continue
+
+                        value = ""
+
+                        if rule_type == "Fixed":
+                            value = rule["fixed_value"]
+                        elif rule_type == "Formula":
+                            value = rule["formula_used"]
+                        else:
+                            value = "Manual"
+
+                        row_data[f"{attribute} Type"] = rule_type
+                        row_data[f"{attribute} Value"] = value
+
+                    display_rows.append(row_data)
+
+                display_df = pd.DataFrame(display_rows)
+
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    hide_index=True
+                )
