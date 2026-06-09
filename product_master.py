@@ -24,11 +24,24 @@ def get_products(cur):
     )
 
 
+def normalize_rule_type(value):
+    if not value:
+        return "Manual"
+
+    value = str(value).strip().lower()
+
+    if value == "fixed":
+        return "Fixed"
+    if value == "formula":
+        return "Formula"
+
+    return "Manual"
+
+
 def show_product_master(conn, cur):
     st.title("Product Master")
 
-    attributes = ["Length", "Width", "Thickness", "Quantity"]
-    rule_types = ["Manual", "Fixed", "Formula"]
+    attributes = ["Length", "Width", "Thickness"]
 
     # =====================================================
     # 1. ADD PRODUCT
@@ -38,10 +51,16 @@ def show_product_master(conn, cur):
             col1, col2, col3 = st.columns([2, 2, 1])
 
             with col1:
-                product_cat = st.text_input("Product Category", placeholder="Door")
+                product_cat = st.text_input(
+                    "Product Category",
+                    placeholder="Door"
+                )
 
             with col2:
-                product_code = st.text_input("Product Code", placeholder="D1-1.2")
+                product_code = st.text_input(
+                    "Product Code",
+                    placeholder="D1-1.2"
+                )
 
             with col3:
                 st.write("")
@@ -49,9 +68,12 @@ def show_product_master(conn, cur):
                 submitted = st.form_submit_button("Save Product")
 
             if submitted:
-                if not product_cat.strip():
+                product_cat = product_cat.strip()
+                product_code = product_code.strip()
+
+                if not product_cat:
                     st.warning("Enter product category.")
-                elif not product_code.strip():
+                elif not product_code:
                     st.warning("Enter product code.")
                 else:
                     cur.execute(
@@ -61,7 +83,7 @@ def show_product_master(conn, cur):
                         WHERE product_cat = %s
                           AND product_code = %s
                         """,
-                        (product_cat.strip(), product_code.strip())
+                        (product_cat, product_code)
                     )
 
                     if cur.fetchone():
@@ -72,9 +94,15 @@ def show_product_master(conn, cur):
                             INSERT INTO products (product_cat, product_code)
                             VALUES (%s, %s)
                             """,
-                            (product_cat.strip(), product_code.strip())
+                            (product_cat, product_code)
                         )
                         conn.commit()
+
+                        new_label = f"{product_cat} - {product_code}"
+                        st.session_state["component_product_select"] = new_label
+                        st.session_state["define_product_select"] = new_label
+                        st.session_state["view_product_select"] = new_label
+
                         st.success("Product saved.")
                         st.rerun()
 
@@ -96,7 +124,7 @@ def show_product_master(conn, cur):
             }
 
             selected_product = st.selectbox(
-                "Select Product for Components",
+                "Select Product",
                 list(product_options.keys()),
                 key="component_product_select"
             )
@@ -104,7 +132,7 @@ def show_product_master(conn, cur):
             selected_cat = product_options[selected_product]["product_cat"]
             selected_code = product_options[selected_product]["product_code"]
 
-            st.markdown(f"### Components for: `{selected_cat} - {selected_code}`")
+            st.markdown(f"### Add components for `{selected_cat} - {selected_code}`")
 
             existing_components_df = fetch_df(
                 cur,
@@ -119,6 +147,7 @@ def show_product_master(conn, cur):
             )
 
             if not existing_components_df.empty:
+                st.caption("Components already added to this product")
                 st.dataframe(
                     existing_components_df,
                     use_container_width=True,
@@ -126,74 +155,99 @@ def show_product_master(conn, cur):
                 )
 
             row_count = st.number_input(
-                "How many components do you want to add?",
+                "Number of component rows",
                 min_value=1,
                 max_value=50,
                 value=5,
                 step=1
             )
 
-            component_input_df = pd.DataFrame({
-                "Component": ["" for _ in range(int(row_count))]
-            })
-
-            edited_components = st.data_editor(
-                component_input_df,
-                use_container_width=True,
-                hide_index=True,
-                num_rows="fixed",
-                column_config={
-                    "Component": st.column_config.TextColumn(
-                        "Component Name",
-                        required=False,
-                        help="Example: Frame Vertical, Flush Shutter"
-                    )
-                },
-                key="bulk_product_components_editor"
-            )
-
-            if st.button("Save Components to Product", type="primary"):
+            with st.form("bulk_add_components_form"):
                 component_names = []
 
-                for value in edited_components["Component"].tolist():
-                    if value and str(value).strip():
-                        component_names.append(str(value).strip())
+                for i in range(int(row_count)):
+                    component_name = st.text_input(
+                        f"Component {i + 1}",
+                        placeholder="Example: Frame Vertical",
+                        key=f"component_row_{i}"
+                    )
+                    component_names.append(component_name)
 
-                component_names = list(dict.fromkeys(component_names))
+                submitted = st.form_submit_button("Save Components to Product")
 
-                if not component_names:
-                    st.warning("Enter at least one component.")
-                else:
-                    added_count = 0
+                if submitted:
+                    cleaned_components = []
 
-                    for component_name in component_names:
-                        cur.execute(
-                            """
-                            INSERT INTO component_library (component_name)
-                            VALUES (%s)
-                            ON CONFLICT (component_name) DO NOTHING
-                            """,
-                            (component_name,)
-                        )
+                    for name in component_names:
+                        if name and name.strip():
+                            cleaned_components.append(name.strip())
 
-                        cur.execute(
-                            """
-                            SELECT id
-                            FROM product_component_rules
-                            WHERE product_cat = %s
-                              AND product_code = %s
-                              AND component = %s
-                            LIMIT 1
-                            """,
-                            (selected_cat, selected_code, component_name)
-                        )
+                    cleaned_components = list(dict.fromkeys(cleaned_components))
 
-                        if cur.fetchone():
-                            continue
+                    if not cleaned_components:
+                        st.warning("Enter at least one component.")
+                    else:
+                        added_count = 0
 
-                        display_order = 1
+                        for component_name in cleaned_components:
+                            cur.execute(
+                                """
+                                INSERT INTO component_library (component_name)
+                                VALUES (%s)
+                                ON CONFLICT (component_name) DO NOTHING
+                                """,
+                                (component_name,)
+                            )
 
-                        for attribute in attributes:
+                            cur.execute(
+                                """
+                                SELECT id
+                                FROM product_component_rules
+                                WHERE product_cat = %s
+                                  AND product_code = %s
+                                  AND component = %s
+                                LIMIT 1
+                                """,
+                                (selected_cat, selected_code, component_name)
+                            )
+
+                            if cur.fetchone():
+                                continue
+
+                            display_order = 1
+
+                            for attribute in attributes:
+                                cur.execute(
+                                    """
+                                    INSERT INTO product_component_rules
+                                    (
+                                        product_cat,
+                                        product_code,
+                                        component,
+                                        attribute,
+                                        "type",
+                                        formula_used,
+                                        quantity,
+                                        fixed_value,
+                                        display_order
+                                    )
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    """,
+                                    (
+                                        selected_cat,
+                                        selected_code,
+                                        component_name,
+                                        attribute,
+                                        "Manual",
+                                        None,
+                                        None,
+                                        None,
+                                        display_order
+                                    )
+                                )
+
+                                display_order += 1
+
                             cur.execute(
                                 """
                                 INSERT INTO product_component_rules
@@ -214,21 +268,20 @@ def show_product_master(conn, cur):
                                     selected_cat,
                                     selected_code,
                                     component_name,
-                                    attribute,
-                                    "Manual",
+                                    "Quantity",
+                                    "Fixed",
                                     None,
-                                    1 if attribute == "Quantity" else None,
-                                    None,
+                                    1,
+                                    1,
                                     display_order
                                 )
                             )
-                            display_order += 1
 
-                        added_count += 1
+                            added_count += 1
 
-                    conn.commit()
-                    st.success(f"{added_count} component(s) added to {selected_code}.")
-                    st.rerun()
+                        conn.commit()
+                        st.success(f"{added_count} component(s) added to {selected_code}.")
+                        st.rerun()
 
     # =====================================================
     # 3. DEFINE PRODUCT COMPONENT ATTRIBUTES
@@ -274,7 +327,7 @@ def show_product_master(conn, cur):
             return
 
         selected_component = st.selectbox(
-            "Select Product Component",
+            "Select Component",
             assigned_components_df["component"].tolist(),
             key="define_component_select"
         )
@@ -283,13 +336,11 @@ def show_product_master(conn, cur):
             cur,
             """
             SELECT
-                component,
                 attribute,
                 "type",
                 fixed_value,
                 formula_used,
-                quantity,
-                display_order
+                quantity
             FROM product_component_rules
             WHERE product_cat = %s
               AND product_code = %s
@@ -304,72 +355,95 @@ def show_product_master(conn, cur):
             for _, row in rules_df.iterrows()
         }
 
-        editor_rows = []
+        quantity_value = 1
 
-        for index, attribute in enumerate(attributes, start=1):
-            existing = existing_map.get(attribute)
+        if "Quantity" in existing_map:
+            quantity_row = existing_map["Quantity"]
 
-            editor_rows.append({
-                "Attribute": attribute,
-                "Type": existing["type"] if existing is not None else "Manual",
-                "Fixed Value": existing["fixed_value"] if existing is not None else None,
-                "Formula": existing["formula_used"] if existing is not None and existing["formula_used"] else "",
-                "Quantity": existing["quantity"] if existing is not None else (1 if attribute == "Quantity" else None),
-                "Display Order": existing["display_order"] if existing is not None else index
-            })
+            if quantity_row["quantity"] is not None:
+                quantity_value = int(quantity_row["quantity"])
+            elif quantity_row["fixed_value"] is not None:
+                quantity_value = int(quantity_row["fixed_value"])
 
-        edit_df = pd.DataFrame(editor_rows)
+        st.markdown(f"### `{selected_component}`")
 
-        edited_df = st.data_editor(
-            edit_df,
-            use_container_width=True,
-            hide_index=True,
-            num_rows="fixed",
-            column_config={
-                "Attribute": st.column_config.TextColumn(
-                    "Attribute",
-                    disabled=True
-                ),
-                "Type": st.column_config.SelectboxColumn(
-                    "Type",
-                    options=rule_types,
-                    required=True
-                ),
-                "Fixed Value": st.column_config.NumberColumn(
-                    "Fixed Value",
-                    step=1.0
-                ),
-                "Formula": st.column_config.TextColumn(
-                    "Formula",
-                    help="Example: opening_width - 40"
-                ),
-                "Quantity": st.column_config.NumberColumn(
-                    "Quantity",
-                    min_value=1,
-                    step=1
-                ),
-                "Display Order": st.column_config.NumberColumn(
-                    "Order",
-                    min_value=1,
-                    step=1
-                )
-            },
-            key=f"rules_editor_{selected_cat}_{selected_code}_{selected_component}"
+        component_qty = st.number_input(
+            "Component Quantity",
+            min_value=1,
+            value=quantity_value,
+            step=1
         )
 
+        st.markdown("### Length / Width / Thickness")
+
+        attribute_rules = {}
+
+        for attribute in attributes:
+            existing = existing_map.get(attribute)
+
+            existing_type = "Manual"
+            existing_fixed_value = 0.0
+            existing_formula = ""
+
+            if existing is not None:
+                existing_type = normalize_rule_type(existing["type"])
+
+                if existing["fixed_value"] is not None:
+                    existing_fixed_value = float(existing["fixed_value"])
+
+                if existing["formula_used"]:
+                    existing_formula = existing["formula_used"]
+
+            st.markdown(f"#### {attribute}")
+
+            col1, col2 = st.columns([1, 3])
+
+            with col1:
+                selected_type = st.selectbox(
+                    "Type",
+                    ["Manual", "Fixed", "Formula"],
+                    index=["Manual", "Fixed", "Formula"].index(existing_type),
+                    key=f"{selected_cat}_{selected_code}_{selected_component}_{attribute}_type"
+                )
+
+            fixed_value = None
+            formula_used = None
+
+            with col2:
+                if selected_type == "Fixed":
+                    fixed_value = st.number_input(
+                        "Fixed Value",
+                        value=existing_fixed_value,
+                        step=1.0,
+                        key=f"{selected_cat}_{selected_code}_{selected_component}_{attribute}_fixed"
+                    )
+
+                elif selected_type == "Formula":
+                    formula_used = st.text_input(
+                        "Formula",
+                        value=existing_formula,
+                        placeholder="Example: opening_width - 40",
+                        key=f"{selected_cat}_{selected_code}_{selected_component}_{attribute}_formula"
+                    )
+
+                else:
+                    st.text_input(
+                        "Manual",
+                        value="Entered in calculator",
+                        disabled=True,
+                        key=f"{selected_cat}_{selected_code}_{selected_component}_{attribute}_manual"
+                    )
+
+            attribute_rules[attribute] = {
+                "type": selected_type,
+                "fixed_value": fixed_value,
+                "formula_used": formula_used
+            }
+
         if st.button("Save Attribute Rules", type="primary"):
-            for _, row in edited_df.iterrows():
-                rule_type = row["Type"]
-                attribute = row["Attribute"]
-                formula = str(row["Formula"]).strip() if pd.notna(row["Formula"]) else ""
-                fixed_value = row["Fixed Value"]
-
-                if rule_type == "Formula" and not formula:
+            for attribute, values in attribute_rules.items():
+                if values["type"] == "Formula" and not values["formula_used"]:
                     st.warning(f"Enter formula for {selected_component} - {attribute}.")
-                    st.stop()
-
-                if rule_type == "Fixed" and pd.isna(fixed_value):
-                    st.warning(f"Enter fixed value for {selected_component} - {attribute}.")
                     st.stop()
 
             cur.execute(
@@ -382,25 +456,9 @@ def show_product_master(conn, cur):
                 (selected_cat, selected_code, selected_component)
             )
 
-            for _, row in edited_df.iterrows():
-                rule_type = row["Type"]
-                attribute = row["Attribute"]
+            display_order = 1
 
-                fixed_value = None
-                formula_used = None
-                quantity = None
-
-                if rule_type == "Fixed":
-                    fixed_value = row["Fixed Value"]
-
-                if rule_type == "Formula":
-                    formula_used = str(row["Formula"]).strip()
-
-                if attribute == "Quantity" and pd.notna(row["Quantity"]):
-                    quantity = int(row["Quantity"])
-
-                display_order = int(row["Display Order"]) if pd.notna(row["Display Order"]) else 1
-
+            for attribute, values in attribute_rules.items():
                 cur.execute(
                     """
                     INSERT INTO product_component_rules
@@ -422,13 +480,44 @@ def show_product_master(conn, cur):
                         selected_code,
                         selected_component,
                         attribute,
-                        rule_type,
-                        formula_used,
-                        quantity,
-                        fixed_value,
+                        values["type"],
+                        values["formula_used"],
+                        None,
+                        values["fixed_value"],
                         display_order
                     )
                 )
+
+                display_order += 1
+
+            cur.execute(
+                """
+                INSERT INTO product_component_rules
+                (
+                    product_cat,
+                    product_code,
+                    component,
+                    attribute,
+                    "type",
+                    formula_used,
+                    quantity,
+                    fixed_value,
+                    display_order
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    selected_cat,
+                    selected_code,
+                    selected_component,
+                    "Quantity",
+                    "Fixed",
+                    None,
+                    component_qty,
+                    component_qty,
+                    display_order
+                )
+            )
 
             conn.commit()
             st.success("Attribute rules saved.")
@@ -469,8 +558,7 @@ def show_product_master(conn, cur):
                     "type",
                     fixed_value,
                     formula_used,
-                    quantity,
-                    display_order
+                    quantity
                 FROM product_component_rules
                 WHERE product_cat = %s
                   AND product_code = %s
