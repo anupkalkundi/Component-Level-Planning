@@ -39,8 +39,64 @@ def normalize_rule_type(value):
     return "Manual"
 
 
+def clean_number(value):
+    if value in [None, ""]:
+        return None
+
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def ensure_component_size_lines_table(conn, cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS product_component_size_lines (
+            id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            product_cat TEXT NOT NULL,
+            product_code TEXT NOT NULL,
+            component TEXT NOT NULL,
+            line_no INTEGER NOT NULL,
+            width NUMERIC,
+            thickness NUMERIC,
+            quantity INTEGER,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+        """
+    )
+    conn.commit()
+
+
+def fetch_component_size_lines(cur, product_cat, product_code, component):
+    return fetch_df(
+        cur,
+        """
+        SELECT
+            line_no,
+            width,
+            thickness,
+            quantity
+        FROM product_component_size_lines
+        WHERE product_cat = %s
+          AND product_code = %s
+          AND component = %s
+        ORDER BY line_no
+        """,
+        (product_cat, product_code, component)
+    )
+
+
 def show_product_master(conn, cur):
     st.title("Product Master")
+
+    ensure_component_size_lines_table(conn, cur)
 
     attributes = ["Length", "Width", "Thickness"]
 
@@ -441,15 +497,122 @@ def show_product_master(conn, cur):
                 "formula_used": formula_used
             }
 
+        # =====================================================
+        # EXTRA OPTION ADDED ONLY HERE
+        # =====================================================
+        st.markdown("### Multiple Width / Thickness / Quantity Lines")
+
+        existing_size_lines_df = fetch_component_size_lines(
+            cur,
+            selected_cat,
+            selected_code,
+            selected_component
+        )
+
+        has_existing_size_lines = not existing_size_lines_df.empty
+
+        use_multiple_size_lines = st.checkbox(
+            "This component has multiple Width / Thickness / Quantity lines",
+            value=has_existing_size_lines,
+            key=f"{selected_cat}_{selected_code}_{selected_component}_multi_size_enabled"
+        )
+
+        size_lines = []
+
+        if use_multiple_size_lines:
+            existing_line_count = len(existing_size_lines_df) if has_existing_size_lines else 2
+
+            line_count = st.number_input(
+                "Number of size lines",
+                min_value=2,
+                max_value=10,
+                value=max(2, existing_line_count),
+                step=1,
+                key=f"{selected_cat}_{selected_code}_{selected_component}_size_line_count"
+            )
+
+            existing_lines_map = {}
+
+            if has_existing_size_lines:
+                for _, line in existing_size_lines_df.iterrows():
+                    existing_lines_map[int(line["line_no"])] = line
+
+            for line_no in range(1, int(line_count) + 1):
+                existing_line = existing_lines_map.get(line_no)
+
+                default_width = 0.0
+                default_thickness = 0.0
+                default_quantity = 0
+
+                if existing_line is not None:
+                    if existing_line["width"] is not None:
+                        default_width = float(existing_line["width"])
+                    if existing_line["thickness"] is not None:
+                        default_thickness = float(existing_line["thickness"])
+                    if existing_line["quantity"] is not None:
+                        default_quantity = int(existing_line["quantity"])
+
+                st.markdown(f"#### Line {line_no}")
+
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    width = st.number_input(
+                        "Width",
+                        value=default_width,
+                        step=1.0,
+                        key=f"{selected_cat}_{selected_code}_{selected_component}_line_{line_no}_width"
+                    )
+
+                with col2:
+                    thickness = st.number_input(
+                        "Thickness",
+                        value=default_thickness,
+                        step=1.0,
+                        key=f"{selected_cat}_{selected_code}_{selected_component}_line_{line_no}_thickness"
+                    )
+
+                with col3:
+                    quantity = st.number_input(
+                        "Quantity",
+                        min_value=0,
+                        value=default_quantity,
+                        step=1,
+                        key=f"{selected_cat}_{selected_code}_{selected_component}_line_{line_no}_quantity"
+                    )
+
+                size_lines.append({
+                    "line_no": line_no,
+                    "width": width,
+                    "thickness": thickness,
+                    "quantity": quantity,
+                })
+
         if st.button("Save Attribute Rules", type="primary"):
             for attribute, values in attribute_rules.items():
                 if values["type"] == "Formula" and not values["formula_used"]:
                     st.warning(f"Enter formula for {selected_component} - {attribute}.")
                     st.stop()
 
+            if use_multiple_size_lines:
+                for line in size_lines:
+                    if line["quantity"] <= 0:
+                        st.warning(f"Enter quantity for size line {line['line_no']}.")
+                        st.stop()
+
             cur.execute(
                 """
                 DELETE FROM product_component_rules
+                WHERE product_cat = %s
+                  AND product_code = %s
+                  AND component = %s
+                """,
+                (selected_cat, selected_code, selected_component)
+            )
+
+            cur.execute(
+                """
+                DELETE FROM product_component_size_lines
                 WHERE product_cat = %s
                   AND product_code = %s
                   AND component = %s
@@ -520,6 +683,33 @@ def show_product_master(conn, cur):
                 )
             )
 
+            if use_multiple_size_lines:
+                for line in size_lines:
+                    cur.execute(
+                        """
+                        INSERT INTO product_component_size_lines
+                        (
+                            product_cat,
+                            product_code,
+                            component,
+                            line_no,
+                            width,
+                            thickness,
+                            quantity
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            selected_cat,
+                            selected_code,
+                            selected_component,
+                            line["line_no"],
+                            line["width"],
+                            line["thickness"],
+                            line["quantity"],
+                        )
+                    )
+
             conn.commit()
             st.success("Attribute rules saved.")
             st.rerun()
@@ -568,6 +758,23 @@ def show_product_master(conn, cur):
                 (selected_cat, selected_code)
             )
 
+            size_lines_df = fetch_df(
+                cur,
+                """
+                SELECT
+                    component,
+                    line_no,
+                    width,
+                    thickness,
+                    quantity
+                FROM product_component_size_lines
+                WHERE product_cat = %s
+                  AND product_code = %s
+                ORDER BY component, line_no
+                """,
+                (selected_cat, selected_code)
+            )
+
             if rules_df.empty:
                 st.info("No product definitions found.")
             else:
@@ -606,6 +813,12 @@ def show_product_master(conn, cur):
                         row_data[f"{attribute} Type"] = rule_type
                         row_data[f"{attribute} Value"] = value
 
+                    has_size_lines = not size_lines_df[
+                        size_lines_df["component"] == component
+                    ].empty
+
+                    row_data["Multiple Size Lines"] = "Yes" if has_size_lines else "No"
+
                     display_rows.append(row_data)
 
                 display_df = pd.DataFrame(display_rows)
@@ -615,3 +828,11 @@ def show_product_master(conn, cur):
                     use_container_width=True,
                     hide_index=True
                 )
+
+                if not size_lines_df.empty:
+                    st.markdown("### Multiple Width / Thickness / Quantity Lines")
+                    st.dataframe(
+                        size_lines_df,
+                        use_container_width=True,
+                        hide_index=True
+                    )
